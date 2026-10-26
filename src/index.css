@@ -1,0 +1,233 @@
+@import "tailwindcss";
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+/* 1. Hero Entrance Animations (Fade in and slide up 16px, 100ms staggered delay, 500ms ease-out) */
+@keyframes heroSlideUp16 {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hero-entrance-badge {
+  animation: heroSlideUp16 500ms ease-out both;
+  animation-delay: 0ms;
+  will-change: transform, opacity;
+}
+
+.hero-entrance-heading {
+  animation: heroSlideUp16 500ms ease-out both;
+  animation-delay: 100ms;
+  will-change: transform, opacity;
+}
+
+.hero-entrance-sub {
+  animation: heroSlideUp16 500ms ease-out both;
+  animation-delay: 200ms;
+  will-change: transform, opacity;
+}
+
+.hero-entrance-chips {
+  animation: heroSlideUp16 500ms ease-out both;
+  animation-delay: 300ms;
+  will-change: transform, opacity;
+}
+
+.hero-entrance-form {
+  animation: heroSlideUp16 500ms ease-out both;
+  animation-delay: 400ms;
+  will-change: transform, opacity;
+}
+
+/* 2. Heading "Seconds" Gradient Shimmer (4s infinite, background-position) */
+@keyframes secondsShimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.shimmer-seconds {
+  background-size: 200% auto;
+  animation: secondsShimmer 4s ease-in-out infinite;
+}
+
+/* 3. Background Circles: Drift up, down, sideways (transform only, 12-16s infinite ease-in-out) */
+@keyframes circleDriftOne {
+  0%, 100% {
+    transform: translate(0, 0);
+  }
+  33% {
+    transform: translate(20px, -16px);
+  }
+  66% {
+    transform: translate(-14px, 12px);
+  }
+}
+
+@keyframes circleDriftTwo {
+  0%, 100% {
+    transform: translate(0, 0);
+  }
+  33% {
+    transform: translate(-18px, 14px);
+  }
+  66% {
+    transform: translate(14px, -12px);
+  }
+}
+
+.hero-bg-circle-1 {
+  animation: circleDriftOne 13s ease-in-out infinite;
+  will-change: transform;
+}
+
+.hero-bg-circle-2 {
+  animation: circleDriftTwo 16s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* 4. Get Video Button: Pulsing glow ring every 3s, hover lift 2px & brighten, press scale 0.97 */
+@keyframes buttonPulseRing {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(37, 99, 235, 0);
+  }
+}
+
+.get-video-pulse {
+  animation: buttonPulseRing 3s ease-in-out infinite;
+  transition: transform 180ms ease-out, filter 180ms ease-out, box-shadow 180ms ease-out;
+  will-change: transform;
+}
+
+.get-video-pulse:hover:not(:disabled) {
+  transform: translateY(-2px);
+  filter: brightness(1.08);
+}
+
+.get-video-pulse:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* 5. Chips & Feature Cards: Hover lift 3px + stronger border, Scroll slide up */
+.chip-hover {
+  transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  will-change: transform;
+}
+
+.chip-hover:hover {
+  transform: translateY(-3px);
+  border-color: #3b82f6 !important;
+  box-shadow: 0 6px 16px -2px rgba(59, 130, 246, 0.2);
+}
+
+.feature-card-item {
+  transition: transform 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+  will-change: transform;
+}
+
+.feature-card-item:hover {
+  transform: translateY(-3px);
+  border-color: #3b82f6 !important;
+  box-shadow: 0 12px 28px -4px rgba(15, 23, 42, 0.08);
+}
+
+.feature-card-scroll {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 500ms ease-out, transform 500ms ease-out;
+  will-change: transform, opacity;
+}
+
+.feature-card-scroll.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 6. Feature Card Icons: Gentle Float (up and down 4px, 3s infinite) */
+@keyframes floatIcon4px {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.feature-icon-float {
+  animation: floatIcon4px 3s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* 7. Wait Note: Smooth fade in while running, icon spins */
+@keyframes waitNoteFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.wait-note-animated {
+  animation: waitNoteFadeIn 400ms ease-out forwards;
+  will-change: transform, opacity;
+}
+
+/* General Fade In Utility */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.25s ease-out forwards;
+}
+
+/* 9. Accessibility: Respect prefers-reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .feature-card-scroll {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

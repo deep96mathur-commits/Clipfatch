@@ -1,0 +1,8 @@
+{
+  "name": "ClipFetch - Social Media Video Downloader",
+  "description": "Fast, clean, and secure web application to check and download public videos, reels, and watch clips from Facebook in HD MP4 or MP3.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

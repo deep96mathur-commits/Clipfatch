@@ -1,0 +1,663 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClipFetch - Facebook Video & Reel Downloader</title>
+    <meta name="description" content="Fast, clean, and secure web application to check and download public videos, reels, and watch clips from Facebook in HD MP4 or MP3." />
+    <meta name="keywords" content="facebook video downloader, fb video download, download facebook video, facebook video download online, facebook video downloader HD, save facebook video, fb video downloader free, facebook video download 720p, facebook video download 480p, facebook video to mp4, facebook video to mp3, facebook mp3 downloader, download facebook audio, facebook video downloader for android, facebook video downloader for iphone, download facebook video without app, facebook video downloader without login, facebook reels downloader, download facebook reels, facebook story downloader, facebook watch video download, how to download facebook video on mobile, how to save facebook video to gallery, download facebook video with sound, facebook video download kaise kare, fb video download kaise karen, facebook se video download kaise kare" />
+    <meta property="og:title" content="ClipFetch - Facebook Video & Reel Downloader" />
+    <meta property="og:description" content="Fast, clean, and secure web application to check and download public videos, reels, and watch clips from Facebook in HD MP4 or MP3." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#2563eb" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%233B82F6'/%3E%3Cstop offset='100%25' stop-color='%238B5CF6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpolygon points='12,9 24,16 12,23' fill='white'/%3E%3C/svg%3E" />
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased font-sans selection:bg-blue-100 selection:text-blue-900 min-h-screen">
+    <div id="root"></div>
+
+    <!-- ======================================================== -->
+    <!-- ClipFatch Modern Animations: CSS Style Block              -->
+    <!-- ======================================================== -->
+    <style>
+      /* --- Brand Variables & Base Theme Setup --- */
+      :root {
+        --clipfatch-brand: #1366e8;
+        --clipfatch-brand-glow: rgba(19, 102, 232, 0.28);
+        --clipfatch-brand-light: rgba(19, 102, 232, 0.12);
+      }
+
+      /* Hero entrance animations are managed via .hero-entrance-* in src/index.css */
+
+      /* --------------------------------------------------------
+         2. Input Box: Focus Glow Pulse & Paste Bounce
+         Target: The search bar container and paste trigger
+         Timing: 320ms bounce, 500ms soft pulse cycle
+         -------------------------------------------------------- */
+      /* Input bar container subtle focus glow effect using opacity & transform */
+      form > div:first-child {
+        position: relative;
+        transition: transform 220ms ease;
+      }
+
+      /* Focus glow overlay */
+      form > div:first-child::before {
+        content: '';
+        position: absolute;
+        inset: -3px;
+        border-radius: inherit;
+        border: 2px solid var(--clipfatch-brand);
+        box-shadow: 0 0 16px var(--clipfatch-brand-glow);
+        pointer-events: none;
+        opacity: 0;
+        transform: scale(0.992);
+        transition: opacity 240ms ease, transform 240ms ease;
+        z-index: 0;
+      }
+
+      form:focus-within > div:first-child::before {
+        opacity: 1;
+        transform: scale(1);
+        animation: clipfatchFocusPulse 2.4s ease-in-out infinite alternate;
+      }
+
+      @keyframes clipfatchFocusPulse {
+        0% {
+          opacity: 0.65;
+          transform: scale(0.997);
+        }
+        100% {
+          opacity: 1;
+          transform: scale(1.003);
+        }
+      }
+
+      /* Gentle "paste bounce" triggered via vanilla JS when text is pasted */
+      .clipfatch-paste-bounce {
+        animation: clipfatchPasteBounce 320ms cubic-bezier(0.34, 1.56, 0.64, 1) both !important;
+        will-change: transform;
+      }
+
+      @keyframes clipfatchPasteBounce {
+        0% {
+          transform: scale(1);
+        }
+        40% {
+          transform: scale(1.028);
+        }
+        75% {
+          transform: scale(0.992);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      /* --------------------------------------------------------
+         3. "Get Video" Button: Hover Lift, Press-Down, Spinner
+         Target: Form submit button
+         Timing: 200ms - 250ms transitions
+         -------------------------------------------------------- */
+      form button[type="submit"] {
+        position: relative;
+        transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease;
+        will-change: transform;
+      }
+
+      @media (hover: hover) {
+        form button[type="submit"]:hover:not(:disabled) {
+          transform: translateY(-2px);
+        }
+      }
+
+      form button[type="submit"]:active:not(:disabled) {
+        transform: translateY(1px) scale(0.98);
+      }
+
+      /* Smooth continuous button spinner animation */
+      .clipfatch-spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        border-top-color: #ffffff;
+        border-radius: 50%;
+        animation: clipfatchSpin 500ms linear infinite;
+        will-change: transform;
+      }
+
+      @keyframes clipfatchSpin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* --------------------------------------------------------
+         4. Loading State: Skeleton Shimmer Placeholder
+         Target: Injected skeleton container while results load
+         Timing: 520ms continuous shimmer cycle
+         -------------------------------------------------------- */
+      .clipfatch-skeleton-card {
+        max-width: 56rem;
+        margin: 2rem auto;
+        padding: 1.5rem;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 1.5rem;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+        animation: clipfatchHeroFadeSlide 350ms cubic-bezier(0.16, 1, 0.3, 1) both;
+      }
+
+      .dark .clipfatch-skeleton-card {
+        background: #1e293b;
+        border-color: #334155;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+      }
+
+      .clipfatch-shimmer-box {
+        position: relative;
+        overflow: hidden;
+        background-color: #f1f5f9;
+        border-radius: 0.75rem;
+      }
+
+      .dark .clipfatch-shimmer-box {
+        background-color: #0f172a;
+      }
+
+      .clipfatch-shimmer-box::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          90deg,
+          rgba(255, 255, 255, 0) 0%,
+          rgba(255, 255, 255, 0.55) 50%,
+          rgba(255, 255, 255, 0) 100%
+        );
+        transform: translateX(-100%);
+        animation: clipfatchShimmerMove 520ms linear infinite;
+        will-change: transform;
+      }
+
+      .dark .clipfatch-shimmer-box::after {
+        background: linear-gradient(
+          90deg,
+          rgba(255, 255, 255, 0) 0%,
+          rgba(255, 255, 255, 0.1) 50%,
+          rgba(255, 255, 255, 0) 100%
+        );
+      }
+
+      @keyframes clipfatchShimmerMove {
+        100% {
+          transform: translateX(100%);
+        }
+      }
+
+      /* --------------------------------------------------------
+         5. Results Animations: Card & Staggered Quality Rows
+         Target: Video card & quality row labels
+         Timing: 420ms card, 300ms rows with 60ms stagger
+         -------------------------------------------------------- */
+      /* Main result card slide-up */
+      .scroll-mt-24 > div,
+      .animate-fadeIn {
+        animation: clipfatchResultSlideUp 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        will-change: transform, opacity;
+      }
+
+      @keyframes clipfatchResultSlideUp {
+        from {
+          opacity: 0;
+          transform: translateY(24px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* Staggered quality rows slide-up */
+      label:has(input[name="formatSelector"]) {
+        animation: clipfatchRowSlideUp 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        will-change: transform, opacity;
+      }
+
+      label:has(input[name="formatSelector"]):nth-of-type(1) { animation-delay: 60ms; }
+      label:has(input[name="formatSelector"]):nth-of-type(2) { animation-delay: 120ms; }
+      label:has(input[name="formatSelector"]):nth-of-type(3) { animation-delay: 180ms; }
+      label:has(input[name="formatSelector"]):nth-of-type(4) { animation-delay: 240ms; }
+      label:has(input[name="formatSelector"]):nth-of-type(5) { animation-delay: 300ms; }
+      label:has(input[name="formatSelector"]):nth-of-type(6) { animation-delay: 360ms; }
+
+      @keyframes clipfatchRowSlideUp {
+        from {
+          opacity: 0;
+          transform: translateY(14px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* --------------------------------------------------------
+         6. Download Button: Progress Bar Fill & Checkmark Pop
+         Target: Main download action button
+         Timing: 400ms progress fill, 250ms checkmark pop
+         -------------------------------------------------------- */
+      .clipfatch-btn-download {
+        position: relative;
+        overflow: hidden;
+      }
+
+      /* Progress bar fill layer */
+      .clipfatch-btn-download::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: rgba(255, 255, 255, 0.28);
+        transform: scaleX(0);
+        transform-origin: left;
+        pointer-events: none;
+        will-change: transform;
+      }
+
+      .clipfatch-downloading::after {
+        animation: clipfatchProgressFill 420ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+      }
+
+      @keyframes clipfatchProgressFill {
+        from {
+          transform: scaleX(0);
+        }
+        to {
+          transform: scaleX(1);
+        }
+      }
+
+      /* Small pop animation for download success indicator */
+      .clipfatch-check-pop {
+        animation: clipfatchCheckmarkPop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+        will-change: transform, opacity;
+      }
+
+      @keyframes clipfatchCheckmarkPop {
+        0% {
+          opacity: 0;
+          transform: scale(0.3);
+        }
+        70% {
+          opacity: 1;
+          transform: scale(1.22);
+        }
+        100% {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+
+      /* --------------------------------------------------------
+         7. Error Messages: Quick Gentle Shake + Fade-In
+         Target: Validation errors and error alert banners
+         Timing: 420ms duration (uses only transform & opacity)
+         -------------------------------------------------------- */
+      div[role="alert"],
+      .text-rose-600,
+      .dark .text-rose-400,
+      .clipfatch-error-shake {
+        animation: clipfatchGentleShake 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+        will-change: transform, opacity;
+      }
+
+      @keyframes clipfatchGentleShake {
+        0% {
+          opacity: 0;
+          transform: translateY(-6px) translateX(0);
+        }
+        20% {
+          opacity: 1;
+          transform: translateY(0) translateX(-5px);
+        }
+        40% {
+          transform: translateY(0) translateX(5px);
+        }
+        60% {
+          transform: translateY(0) translateX(-3px);
+        }
+        80% {
+          transform: translateY(0) translateX(3px);
+        }
+        100% {
+          opacity: 1;
+          transform: translateY(0) translateX(0);
+        }
+      }
+
+      /* --------------------------------------------------------
+         8. Background: Subtle Floating Shapes / Soft Gradient Motion
+         Target: Ambient decorative background orbs
+         Timing: 18s - 22s slow gentle float
+         -------------------------------------------------------- */
+      .clipfatch-bg-layer {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: -1;
+        overflow: hidden;
+      }
+
+      .clipfatch-orb-a,
+      .clipfatch-orb-b {
+        position: absolute;
+        border-radius: 9999px;
+        filter: blur(75px);
+        will-change: transform;
+      }
+
+      .clipfatch-orb-a {
+        top: -8%;
+        left: 20%;
+        width: 440px;
+        height: 440px;
+        background: radial-gradient(circle, rgba(19, 102, 232, 0.16) 0%, rgba(19, 102, 232, 0) 70%);
+        animation: clipfatchOrbFloat1 18s ease-in-out infinite alternate;
+      }
+
+      .clipfatch-orb-b {
+        top: 18%;
+        right: 15%;
+        width: 380px;
+        height: 380px;
+        background: radial-gradient(circle, rgba(99, 102, 241, 0.14) 0%, rgba(99, 102, 241, 0) 70%);
+        animation: clipfatchOrbFloat2 22s ease-in-out infinite alternate;
+      }
+
+      .dark .clipfatch-orb-a {
+        background: radial-gradient(circle, rgba(19, 102, 232, 0.1) 0%, rgba(19, 102, 232, 0) 70%);
+      }
+
+      .dark .clipfatch-orb-b {
+        background: radial-gradient(circle, rgba(99, 102, 241, 0.08) 0%, rgba(99, 102, 241, 0) 70%);
+      }
+
+      @keyframes clipfatchOrbFloat1 {
+        0% {
+          transform: translate(0, 0) scale(1);
+        }
+        50% {
+          transform: translate(25px, -20px) scale(1.06);
+        }
+        100% {
+          transform: translate(-18px, 15px) scale(0.96);
+        }
+      }
+
+      @keyframes clipfatchOrbFloat2 {
+        0% {
+          transform: translate(0, 0) scale(1);
+        }
+        50% {
+          transform: translate(-22px, 18px) scale(1.05);
+        }
+        100% {
+          transform: translate(16px, -15px) scale(0.95);
+        }
+      }
+
+      /* --------------------------------------------------------
+         Accessibility: Respect prefers-reduced-motion
+         Disables all animations & transitions for sensitive users
+         -------------------------------------------------------- */
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.001ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001ms !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+
+    <!-- ======================================================== -->
+    <!-- ClipFatch Modern Animations: Vanilla JavaScript Block     -->
+    <!-- ======================================================== -->
+    <script>
+      (function () {
+        'use strict';
+
+        // --------------------------------------------------------
+        // 8. Background Ambient Layer Injection
+        // Injects background orbs if not already present
+        // --------------------------------------------------------
+        function initBackgroundLayer() {
+          if (document.querySelector('.clipfatch-bg-layer')) return;
+          const bg = document.createElement('div');
+          bg.className = 'clipfatch-bg-layer';
+          bg.setAttribute('aria-hidden', 'true');
+          bg.innerHTML = '<div class="clipfatch-orb-a"></div><div class="clipfatch-orb-b"></div>';
+          document.body.prepend(bg);
+        }
+
+        // --------------------------------------------------------
+        // 2. Input Box Paste Bounce Handler
+        // Hooks into 'paste' event and "Paste" button click
+        // --------------------------------------------------------
+        function triggerPasteBounce(container) {
+          if (!container) return;
+          container.classList.remove('clipfatch-paste-bounce');
+          // Force layout reflow to re-trigger CSS keyframe
+          void container.offsetWidth;
+          container.classList.add('clipfatch-paste-bounce');
+          setTimeout(function () {
+            container.classList.remove('clipfatch-paste-bounce');
+          }, 350);
+        }
+
+        function initPasteHooks() {
+          document.addEventListener('paste', function (e) {
+            const input = e.target.closest('input[type="text"], input[name="url"], input[aria-label*="URL"]');
+            if (input) {
+              const container = input.closest('form > div') || input.parentElement;
+              triggerPasteBounce(container);
+            }
+          });
+
+          // Detect clicks on "Paste" button inside the hero input bar
+          document.addEventListener('click', function (e) {
+            const pasteBtn = e.target.closest('button');
+            if (pasteBtn && pasteBtn.textContent.trim().toLowerCase().includes('paste')) {
+              const form = pasteBtn.closest('form');
+              if (form) {
+                const container = form.querySelector('div:first-child');
+                setTimeout(function () {
+                  triggerPasteBounce(container);
+                }, 120);
+              }
+            }
+          });
+        }
+
+        // --------------------------------------------------------
+        // 3. "Get Video" Button: Double-Click Guard & Loading
+        // --------------------------------------------------------
+        var isFetchingVideo = false;
+
+        function initSubmitProtection() {
+          document.addEventListener('submit', function (e) {
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            if (!submitBtn) return;
+
+            // Guard against duplicate rapid submissions
+            if (isFetchingVideo || submitBtn.disabled) {
+              e.preventDefault();
+              return;
+            }
+
+            isFetchingVideo = true;
+            submitBtn.setAttribute('data-loading', 'true');
+
+            // Show skeleton shimmer placeholder while results are loading
+            showSkeletonShimmer(e.target);
+
+            // Safety timeout to reset state if request hangs or finishes
+            setTimeout(function () {
+              isFetchingVideo = false;
+              submitBtn.removeAttribute('data-loading');
+            }, 12000);
+          }, true);
+        }
+
+        // --------------------------------------------------------
+        // 4. Loading State: Skeleton Shimmer Placeholder
+        // Injects preview card with thumbnail & quality rows shimmer
+        // --------------------------------------------------------
+        function showSkeletonShimmer(formEl) {
+          if (document.getElementById('clipfatch-skeleton')) return;
+
+          const skeleton = document.createElement('div');
+          skeleton.id = 'clipfatch-skeleton';
+          skeleton.className = 'clipfatch-skeleton-card';
+          skeleton.innerHTML =
+            '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem;">' +
+              '<div class="clipfatch-shimmer-box" style="height: 260px; width: 100%;"></div>' +
+              '<div style="display: flex; flex-direction: column; gap: 0.85rem; justify-content: center;">' +
+                '<div class="clipfatch-shimmer-box" style="height: 24px; width: 45%;"></div>' +
+                '<div class="clipfatch-shimmer-box" style="height: 32px; width: 85%;"></div>' +
+                '<div class="clipfatch-shimmer-box" style="height: 48px; width: 100%; margin-top: 0.5rem;"></div>' +
+                '<div class="clipfatch-shimmer-box" style="height: 48px; width: 100%;"></div>' +
+                '<div class="clipfatch-shimmer-box" style="height: 48px; width: 100%;"></div>' +
+              '</div>' +
+            '</div>';
+
+          // Insert skeleton after hero section or form
+          const section = formEl.closest('section') || formEl;
+          section.parentNode.insertBefore(skeleton, section.nextSibling);
+
+          // Scroll skeleton into view smoothly
+          try {
+            skeleton.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          } catch (_) {}
+        }
+
+        function removeSkeletonShimmer() {
+          const skeleton = document.getElementById('clipfatch-skeleton');
+          if (skeleton) {
+            skeleton.style.transition = 'opacity 200ms ease, transform 200ms ease';
+            skeleton.style.opacity = '0';
+            skeleton.style.transform = 'translateY(-8px) scale(0.98)';
+            setTimeout(function () {
+              if (skeleton.parentNode) skeleton.parentNode.removeChild(skeleton);
+            }, 200);
+          }
+          isFetchingVideo = false;
+        }
+
+        // --------------------------------------------------------
+        // 5 & 7. DOM Observer for Results & Error Message Shake
+        // Removes skeleton when real results or errors appear
+        // --------------------------------------------------------
+        function initMutationWatcher() {
+          var observer = new MutationObserver(function () {
+            // If real result card or error banner has entered DOM, dismiss skeleton
+            var hasResult = document.querySelector('.scroll-mt-24, .animate-fadeIn:not(#clipfatch-skeleton)');
+            var hasError = document.querySelector('div[role="alert"], .text-rose-600, .dark\\:text-rose-400');
+
+            if (hasResult || hasError) {
+              removeSkeletonShimmer();
+            }
+
+            // Hook download button click animation
+            setupDownloadButtonAnimation();
+          });
+
+          observer.observe(document.body, { childList: true, subtree: true });
+        }
+
+        // --------------------------------------------------------
+        // 6. Download Button: Progress Bar Fill & Checkmark Pop
+        // --------------------------------------------------------
+        function setupDownloadButtonAnimation() {
+          var downloadBtns = document.querySelectorAll('button');
+          downloadBtns.forEach(function (btn) {
+            if (btn.getAttribute('data-download-hooked')) return;
+            var text = (btn.textContent || '').toLowerCase();
+            if (text.includes('download') && !text.includes('try another')) {
+              btn.setAttribute('data-download-hooked', 'true');
+              btn.classList.add('clipfatch-btn-download');
+
+              btn.addEventListener('click', function () {
+                btn.classList.add('clipfatch-downloading');
+
+                // After 420ms progress fill, trigger checkmark pop indicator
+                setTimeout(function () {
+                  btn.classList.remove('clipfatch-downloading');
+                  var successBadge = btn.parentElement ? btn.parentElement.querySelector('.text-emerald-600') : null;
+                  if (successBadge) {
+                    successBadge.classList.add('clipfatch-check-pop');
+                  }
+                }, 440);
+              });
+            }
+          });
+        }
+
+        // --------------------------------------------------------
+        // Feature Cards IntersectionObserver (Scroll into view once)
+        // --------------------------------------------------------
+        function initFeatureCardsObserver() {
+          var cards = document.querySelectorAll('.feature-card-scroll:not([data-observed="true"])');
+          if (!cards || !cards.length) return;
+          if (!('IntersectionObserver' in window)) {
+            cards.forEach(function (c) { c.classList.add('is-visible'); });
+            return;
+          }
+          var obs = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+              if (entry.isIntersecting) {
+                entry.target.classList.add('is-visible');
+                obs.unobserve(entry.target);
+              }
+            });
+          }, { threshold: 0.12 });
+          cards.forEach(function (c) {
+            c.setAttribute('data-observed', 'true');
+            obs.observe(c);
+          });
+        }
+
+        // --------------------------------------------------------
+        // Bootstrapping on DOMContentLoaded
+        // --------------------------------------------------------
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', function () {
+            initBackgroundLayer();
+            initPasteHooks();
+            initSubmitProtection();
+            initMutationWatcher();
+            initFeatureCardsObserver();
+          });
+        } else {
+          initBackgroundLayer();
+          initPasteHooks();
+          initSubmitProtection();
+          initMutationWatcher();
+          initFeatureCardsObserver();
+        }
+
+        // Watch for React mounts to observe feature cards
+        var scrollCardWatcher = new MutationObserver(function () {
+          initFeatureCardsObserver();
+        });
+        scrollCardWatcher.observe(document.body, { childList: true, subtree: true });
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
