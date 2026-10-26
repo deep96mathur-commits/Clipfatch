@@ -34,38 +34,38 @@ describe('SSRF Protection & IP Restrictions', () => {
 });
 
 describe('URL Validation & Platform Classification', () => {
-  it('correctly classifies valid X/Twitter URLs', async () => {
-    const res = await validateAndClassifyUrl('https://x.com/jack/status/20');
-    expect(res.safe).toBe(true);
-    expect(res.platform).toBe('x');
-  });
-
   it('correctly classifies valid Facebook URLs', async () => {
     const res = await validateAndClassifyUrl('https://www.facebook.com/watch/?v=123456');
     expect(res.safe).toBe(true);
     expect(res.platform).toBe('facebook');
+
+    const reelRes = await validateAndClassifyUrl('https://www.facebook.com/reel/10158792070386729');
+    expect(reelRes.safe).toBe(true);
+    expect(reelRes.platform).toBe('facebook');
+
+    const watchRes = await validateAndClassifyUrl('https://fb.watch/sampleReel/');
+    expect(watchRes.safe).toBe(true);
+    expect(watchRes.platform).toBe('facebook');
   });
 
-  it('correctly classifies valid Instagram URLs', async () => {
-    const res = await validateAndClassifyUrl('https://www.instagram.com/reel/C7xyz123/');
-    expect(res.safe).toBe(true);
-    expect(res.platform).toBe('instagram');
+  it('rejects non-Facebook platforms as unsupported', async () => {
+    const xRes = await validateAndClassifyUrl('https://x.com/jack/status/20');
+    expect(xRes.safe).toBe(false);
+    expect(xRes.error).toMatch(/Unsupported/i);
+
+    const igRes = await validateAndClassifyUrl('https://www.instagram.com/reel/C7xyz123/');
+    expect(igRes.safe).toBe(false);
+    expect(igRes.error).toMatch(/Unsupported/i);
+
+    const ytRes = await validateAndClassifyUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+    expect(ytRes.safe).toBe(false);
+    expect(ytRes.error).toMatch(/Unsupported/i);
   });
 
   it('rejects lookalike domains (e.g. facebook.com.attacker.com)', async () => {
     const res = await validateAndClassifyUrl('https://facebook.com.malicious.example/video');
     expect(res.safe).toBe(false);
     expect(res.error).toMatch(/Lookalike|Unsupported/i);
-  });
-
-  it('correctly classifies valid YouTube URLs', async () => {
-    const res = await validateAndClassifyUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
-    expect(res.safe).toBe(true);
-    expect(res.platform).toBe('youtube');
-
-    const shortRes = await validateAndClassifyUrl('https://youtu.be/dQw4w9WgXcQ');
-    expect(shortRes.safe).toBe(true);
-    expect(shortRes.platform).toBe('youtube');
   });
 
   it('rejects unsupported domains (e.g. tiktok.com, vimeo.com)', async () => {
@@ -94,14 +94,17 @@ describe('URL Validation & Platform Classification', () => {
 });
 
 describe('Media Download URL Whitelist & SSRF Guard', () => {
-  it('approves legitimate Twitter CDN media URLs', async () => {
-    const res = await validateMediaDownloadUrl('https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/test.mp4');
-    expect(res.safe).toBe(true);
-  });
-
   it('approves legitimate Facebook CDN media URLs', async () => {
     const res = await validateMediaDownloadUrl('https://video.xx.fbcdn.net/v/t39.254/video.mp4');
     expect(res.safe).toBe(true);
+
+    const scontentRes = await validateMediaDownloadUrl('https://scontent.xx.fbcdn.net/v/t39.254/video.mp4');
+    expect(scontentRes.safe).toBe(true);
+  });
+
+  it('rejects non-Facebook CDN domains for media streaming', async () => {
+    const res = await validateMediaDownloadUrl('https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/test.mp4');
+    expect(res.safe).toBe(false);
   });
 
   it('rejects unauthorized arbitrary domains for media streaming', async () => {
@@ -129,7 +132,7 @@ describe('Filename Sanitization', () => {
 
 describe('Zod Request Validators', () => {
   it('validates correct VideoInfo payload', () => {
-    const parsed = videoInfoSchema.safeParse({ url: 'https://x.com/user/status/12345' });
+    const parsed = videoInfoSchema.safeParse({ url: 'https://www.facebook.com/watch/?v=12345' });
     expect(parsed.success).toBe(true);
   });
 
@@ -140,17 +143,17 @@ describe('Zod Request Validators', () => {
 
   it('validates VideoDownload payload', () => {
     const parsed = videoDownloadSchema.safeParse({
-      url: 'https://x.com/user/status/12345',
-      formatId: 'x-mp4-0-1080p',
+      url: 'https://www.facebook.com/watch/?v=12345',
+      formatId: 'fb-720p',
     });
     expect(parsed.success).toBe(true);
   });
 
   it('automatically handles and truncates title exceeding 200 characters without failing', () => {
-    const excessivelyLongTitle = 'Extremely long video post caption or YouTube title '.repeat(10); // 520 chars
+    const excessivelyLongTitle = 'Extremely long video post caption or Facebook title '.repeat(10); // 520 chars
     const parsed = videoDownloadSchema.safeParse({
-      url: 'https://x.com/user/status/12345',
-      formatId: 'x-mp4-0-1080p',
+      url: 'https://www.facebook.com/watch/?v=12345',
+      formatId: 'fb-720p',
       title: excessivelyLongTitle,
     });
 
@@ -173,18 +176,6 @@ describe('Adapter Registry', () => {
 
     const fbWatchAdapter = adapterRegistry.getAdapter(new URL('https://fb.watch/xyz123/'));
     expect(fbWatchAdapter?.platform).toBe('facebook');
-
-    const igAdapter = adapterRegistry.getAdapter(new URL('https://www.instagram.com/reel/C7xyz/'));
-    expect(igAdapter?.platform).toBe('instagram');
-
-    const xAdapter = adapterRegistry.getAdapter(new URL('https://x.com/NASA/status/123456'));
-    expect(xAdapter?.platform).toBe('x');
-
-    const ytAdapter = adapterRegistry.getAdapter(new URL('https://www.youtube.com/watch?v=dQw4w9WgXcQ'));
-    expect(ytAdapter?.platform).toBe('youtube');
-
-    const ytShortAdapter = adapterRegistry.getAdapter(new URL('https://youtu.be/dQw4w9WgXcQ'));
-    expect(ytShortAdapter?.platform).toBe('youtube');
   });
 });
 
@@ -196,18 +187,10 @@ describe('yt-dlp Engine & Media Whitelist', () => {
     const fbMedia = await validateMediaDownloadUrl('https://www.facebook.com/video/sample.mp4');
     expect(fbMedia.safe).toBe(true);
   });
-
-  it('validates YouTube media host endpoints and googlevideo CDN', async () => {
-    const ytCdn = await validateMediaDownloadUrl('https://rr1---sn-4g5ednss.googlevideo.com/videoplayback?expire=123');
-    expect(ytCdn.safe).toBe(true);
-
-    const ytMedia = await validateMediaDownloadUrl('https://www.youtube.com/watch?v=sample');
-    expect(ytMedia.safe).toBe(true);
-  });
 });
 
 describe('Format Normalizer: Deduplication & Ascending Sort', () => {
-  it('eliminates duplicate video resolutions and sorts in ascending order (lowest to highest)', () => {
+  it('eliminates duplicate video resolutions and strictly provides 480p and 720p', () => {
     const rawFormats = [
       { id: 'fmt-1080p', format: 'MP4', quality: '1080p', resolution: '1920x1080', height: 1080, url: 'https://cdn.example.com/1080', hasAudio: true, hasVideo: true },
       { id: 'fmt-720p-dup1', format: 'MP4', quality: '720p (HD)', resolution: '1280x720', height: 720, url: 'https://cdn.example.com/720a', hasAudio: true, hasVideo: true },
@@ -219,44 +202,37 @@ describe('Format Normalizer: Deduplication & Ascending Sort', () => {
 
     const normalized = deduplicateAndSortVideoFormats(rawFormats as any);
 
-    // Exactly 4 unique resolutions: 360, 480, 720, 1080
-    expect(normalized).toHaveLength(4);
-
-    // Ascending order check: 360 -> 480 -> 720 -> 1080
-    expect(normalized[0].height).toBe(360);
-    expect(normalized[1].height).toBe(480);
-    expect(normalized[2].height).toBe(720);
-    expect(normalized[3].height).toBe(1080);
-
-    // Preferred format check (kept the 720p with audio over video-only)
-    expect(normalized[2].url).toBe('https://cdn.example.com/720a');
+    // Strictly 480p and 720p
+    expect(normalized).toHaveLength(2);
+    expect(normalized[0].height).toBe(480);
+    expect(normalized[1].height).toBe(720);
+    expect(normalized[1].url).toBe('https://cdn.example.com/720a');
   });
 
-  it('generates standard MP3 audio download options (48, 128, 320 kbps)', () => {
+  it('generates standard 128 kbps MP3 audio download option', () => {
     const audioOptions = generateAudioFormats('https://example.com/video', 120);
 
-    expect(audioOptions).toHaveLength(3);
-    expect(audioOptions.map((a) => a.audioBitrate)).toEqual([48, 128, 320]);
-    expect(audioOptions.every((a) => a.format === 'MP3' && a.isAudio === true)).toBe(true);
+    expect(audioOptions).toHaveLength(1);
+    expect(audioOptions[0].audioBitrate).toBe(128);
+    expect(audioOptions[0].format).toBe('MP3');
+    expect(audioOptions[0].isAudio).toBe(true);
     expect(audioOptions[0].filesizeFormatted).toBeDefined();
-    expect(audioOptions[2].quality).toContain('320 kbps');
+    expect(audioOptions[0].quality).toContain('128 kbps');
   });
 
-  it('guarantees 1080p Full HD format is correctly extracted, labeled, and sorted', () => {
+  it('extracts and normalizes 480p and 720p from mixed format lists', () => {
     const mixedFormats = [
-      { id: 'sample-fhd', format: 'MP4', quality: 'Full HD', resolution: '1920x1080', url: 'https://cdn.example.com/fhd', hasAudio: true, hasVideo: true },
       { id: 'sample-hd', format: 'MP4', quality: 'HD', resolution: '1280x720', url: 'https://cdn.example.com/hd', hasAudio: true, hasVideo: true },
       { id: 'sample-sd', format: 'MP4', quality: 'SD', resolution: '854x480', url: 'https://cdn.example.com/sd', hasAudio: true, hasVideo: true },
     ];
 
     const sorted = deduplicateAndSortVideoFormats(mixedFormats as any);
-    expect(sorted).toHaveLength(3);
+    expect(sorted).toHaveLength(2);
     expect(sorted[0].quality).toBe('480p (SD)');
     expect(sorted[1].quality).toBe('720p (HD)');
-    expect(sorted[2].quality).toBe('1080p (Full HD)');
-    expect(sorted[2].height).toBe(1080);
-    expect(sorted[2].resolution).toBe('1920x1080');
-    expect(sorted[2].isHd).toBe(true);
+    expect(sorted[1].height).toBe(720);
+    expect(sorted[1].resolution).toBe('1280x720');
+    expect(sorted[1].isHd).toBe(true);
   });
 });
 
