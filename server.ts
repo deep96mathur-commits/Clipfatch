@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import express from 'express';
 import dotenv from 'dotenv';
 import { createServerApp } from './server/src/app.js';
+import { createRateLimiter } from './server/src/middleware/rateLimiter.js';
 
 dotenv.config();
 
@@ -16,6 +17,13 @@ const isProd = process.env.NODE_ENV === 'production';
 async function startServer() {
   const app = createServerApp();
 
+  // Root-level rate limiter to guard static and fallback endpoints against DoS
+  const staticLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    maxRequests: 1000,
+  });
+  app.use(staticLimiter);
+
   if (!isProd) {
     // Development mode: Mount Vite middleware for React SPA with HMR
     const { createServer } = await import('vite');
@@ -26,7 +34,6 @@ async function startServer() {
       },
       appType: 'spa',
     });
-
     app.use(vite.middlewares);
   } else {
     // Production mode: Serve pre-built static bundle

@@ -575,12 +575,20 @@ export class YtDlpService {
     };
 
     // If url is a direct video/media link (e.g. .mp4 or fbcdn), attempt direct FFmpeg conversion first
-    const isDirectMedia =
-      url.includes('.mp4') ||
-      url.includes('.m4a') ||
-      url.includes('fbcdn.net') ||
-      url.includes('googlevideo.com') ||
-      url.includes('cdninstagram.com');
+    const isDirectMedia = (() => {
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+        const host = parsed.hostname.toLowerCase();
+        const allowedMediaDomains = ['fbcdn.net', 'facebook.com', 'akamaihd.net', 'googlevideo.com', 'cdninstagram.com'];
+        const isAllowedDomain = allowedMediaDomains.some((d) => host === d || host.endsWith('.' + d));
+        const pathname = parsed.pathname.toLowerCase();
+        const hasMediaExt = pathname.endsWith('.mp4') || pathname.endsWith('.m4a') || pathname.endsWith('.webm');
+        return isAllowedDomain && hasMediaExt;
+      } catch {
+        return false;
+      }
+    })();
 
     if (isDirectMedia) {
       const directFfmpegArgs = [

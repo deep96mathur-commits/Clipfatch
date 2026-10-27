@@ -111,7 +111,7 @@ def format_error(err: Exception) -> tuple[dict, int]:
     return {
         "success": False,
         "detail": "Could not fetch media from that link. Try again in a moment.",
-        "error": {"code": "FETCH_FAILED", "message": str(err)}
+        "error": {"code": "FETCH_FAILED", "message": "Could not fetch media from that link. Please try again."}
     }, 502
 
 @app.route("/", methods=["GET"])
@@ -309,8 +309,8 @@ def download_media():
 
     try:
         url = normalize_url(raw_url)
-    except Exception as e:
-        return jsonify({"detail": str(e)}), 400
+    except Exception:
+        return jsonify({"detail": "Invalid or restricted URL provided."}), 400
 
     temp_dir = tempfile.mkdtemp(prefix="clipfatch_")
 

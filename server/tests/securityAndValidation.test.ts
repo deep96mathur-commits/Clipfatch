@@ -717,6 +717,55 @@ describe('HTTP Endpoint Query Tampering Regression Tests', () => {
       expect(res.status).toBe(200);
     });
   });
+
+  describe('Security Remediations (CodeQL Alerts Verification)', () => {
+    it('enforces secure Helmet HTTP headers on API responses', async () => {
+      const res = await fetch(`${baseUrl}/api/check`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+      const csp = res.headers.get('content-security-policy');
+      expect(csp).toBeDefined();
+      expect(csp).toContain("frame-ancestors 'self'");
+      expect(res.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
+    });
+
+    it('returns rate limit tracking headers on API endpoints', async () => {
+      const res = await fetch(`${baseUrl}/api/check`);
+      expect(res.status).toBe(200);
+      // express-rate-limit standard or legacy headers
+      const hasRateLimitHeader =
+        res.headers.has('ratelimit-limit') ||
+        res.headers.has('x-ratelimit-limit') ||
+        res.headers.has('ratelimit-remaining');
+      expect(hasRateLimitHeader).toBe(true);
+    });
+
+    it('rejects path-embedded and lookalike domains without url.includes vulnerability', async () => {
+      // Attacker tries putting fbcdn.net in pathname or subdomain of an untrusted host
+      const fakeCdn1 = await validateMediaDownloadUrl('https://evil.com/fbcdn.net/exploit.mp4');
+      expect(fakeCdn1.safe).toBe(false);
+
+      const fakeCdn2 = await validateMediaDownloadUrl('https://fbcdn.net.attacker.com/exploit.mp4');
+      expect(fakeCdn2.safe).toBe(false);
+
+      const lookalike = await validateAndClassifyUrl('https://facebook.com.malicious.org/video');
+      expect(lookalike.safe).toBe(false);
+    });
+
+    it('does not leak internal error objects or stack traces on errors', async () => {
+      const res = await fetch(`${baseUrl}/api/video/stream?url=https://facebook.com/watch/?v=999999999999999&formatId=fake_format`);
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      // Ensure no stack traces or raw system exceptions are leaked to the client
+      expect(json.stack).toBeUndefined();
+      expect(json.error?.stack).toBeUndefined();
+      if (json.error?.message) {
+        expect(json.error.message).not.toContain('/app/applet');
+        expect(json.error.message).not.toContain('node:internal');
+      }
+    });
+  });
 });
 
 

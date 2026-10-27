@@ -124,10 +124,12 @@ export async function validateAndClassifyUrl(
   // Check supported domains (strict exact match)
   const platform = SUPPORTED_DOMAINS[hostname];
   if (!platform) {
-    // Check if user passed a lookalike domain (e.g. facebook.com.attacker.com)
-    const isLookalike = Object.keys(SUPPORTED_DOMAINS).some(
-      (supported) => hostname.endsWith('.' + supported) || hostname.includes(supported)
-    );
+    // Check if user passed a lookalike domain (e.g. facebook.com.attacker.com or evil-facebook.com)
+    const isLookalike = ['facebook.com', 'fb.watch', 'fb.gg'].some((domain) => {
+      if (hostname.endsWith('.' + domain)) return true;
+      const parts = hostname.split('.');
+      return parts.some((p) => p === 'facebook' || p.startsWith('facebook-') || p.endsWith('-facebook'));
+    });
 
     if (isLookalike) {
       return {

@@ -10,32 +10,52 @@ export function createServerApp() {
   const app = express();
   app.set('trust proxy', 1);
 
-  // Helmet security headers configured specifically for iframe preview embedding
+  // Secure Helmet middleware configured for both standard security and iframe embedding
   app.use(
     helmet({
-      frameguard: false, // Disable X-Frame-Options: SAMEORIGIN to allow AI Studio iframe preview
-      contentSecurityPolicy: false, // Prevent frame-ancestors 'self' from blocking the iframe
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+          imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
+          mediaSrc: ["'self'", 'blob:', 'https:', 'http:'],
+          connectSrc: ["'self'", 'https:', 'http:', 'ws:', 'wss:'],
+          frameAncestors: ["'self'", 'https:', 'http:'], // Allow embedding in AI Studio preview frame
+        },
+      },
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+      crossOriginOpenerPolicy: false, // Required for preview environment iframe interactions
       crossOriginEmbedderPolicy: false,
-      crossOriginOpenerPolicy: false,
-      crossOriginResourcePolicy: false,
+      dnsPrefetchControl: { allow: false },
+      noSniff: true,
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
     })
   );
 
-  // Explicitly ensure headers that break iframe preview are stripped
-  app.use((_req, res, next) => {
-    res.removeHeader('X-Frame-Options');
-    res.removeHeader('Cross-Origin-Opener-Policy');
-    res.removeHeader('Cross-Origin-Resource-Policy');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    next();
-  });
+  // Controlled CORS configuration
+  const allowedOriginsEnv = process.env.ALLOWED_ORIGINS;
+  const configuredOrigins = allowedOriginsEnv
+    ? allowedOriginsEnv.split(',').map((o) => o.trim())
+    : [];
 
-  // CORS configuration
   app.use(
     cors({
-      origin: true,
+      origin: (requestOrigin, callback) => {
+        // Allow same-origin, curl, server-to-server, or local dev requests
+        if (!requestOrigin) return callback(null, true);
+        if (
+          configuredOrigins.length === 0 ||
+          configuredOrigins.includes('*') ||
+          configuredOrigins.includes(requestOrigin)
+        ) {
+          return callback(null, true);
+        }
+        return callback(null, false);
+      },
       credentials: true,
-      methods: ['GET', 'POST', 'OPTIONS'],
+      methods: ['GET', 'POST', 'HEAD', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
     })
   );
@@ -44,18 +64,17 @@ export function createServerApp() {
   app.use(express.json({ limit: '100kb' }));
   app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 
-  // Per-IP rate limiter on API endpoints
+  // Global & Per-IP rate limiter on API endpoints
   const rateLimitMinutes = parseInt(process.env.RATE_LIMIT_WINDOW_MINUTES || '15', 10);
   const rateLimitMax = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10);
-  app.use(
-    '/api',
-    createRateLimiter({
-      windowMs: rateLimitMinutes * 60 * 1000,
-      maxRequests: rateLimitMax,
-    })
-  );
+  const apiLimiter = createRateLimiter({
+    windowMs: rateLimitMinutes * 60 * 1000,
+    maxRequests: rateLimitMax,
+  });
 
-  // Exclude /api routes from platform cookie, caching, and bot-challenge pages
+  app.use('/api', apiLimiter);
+
+  // Security cache headers on API responses
   app.use('/api', (_req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
     res.setHeader('Pragma', 'no-cache');
@@ -66,6 +85,7 @@ export function createServerApp() {
   });
 
   app.get('/api/mp3', mp3Handler);
+
   // Mount API router
   app.use('/api', apiRouter);
 

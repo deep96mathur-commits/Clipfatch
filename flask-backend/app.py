@@ -15,7 +15,7 @@ import subprocess
 from urllib.parse import urlparse
 from typing import Dict, Any, Optional, List
 
-from flask import Flask, request, jsonify, send_file, after_this_request
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
 # Configure logging
@@ -27,18 +27,30 @@ logger = logging.getLogger("clipfetch-flask")
 
 app = Flask(__name__)
 
-# Enable CORS for frontend requests
-ALLOWED_ORIGINS = os.getenv("CORS_ORIGIN", "*").split(",")
-CORS(
-    app,
-    resources={r"/api/*": {"origins": ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else "*"}},
-    supports_credentials=True,
-    methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept", "Authorization"]
-)
+# Security: Controlled CORS configuration
+ALLOWED_ORIGINS_ENV = os.getenv("CORS_ORIGIN", "")
+ALLOWED_ORIGINS = [o.strip() for o in ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
+
+if not ALLOWED_ORIGINS or "*" in ALLOWED_ORIGINS:
+    # Wildcard origin cannot be used with credentials
+    CORS(
+        app,
+        resources={r"/api/*": {"origins": "*"}},
+        supports_credentials=False,
+        methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Accept", "Authorization"]
+    )
+else:
+    CORS(
+        app,
+        resources={r"/api/*": {"origins": ALLOWED_ORIGINS}},
+        supports_credentials=True,
+        methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Accept", "Authorization"]
+    )
 
 # Configuration
-TEMP_DIR = os.getenv("TEMP_DIR", "/tmp/clipfetch_flask")
+TEMP_DIR = os.path.abspath(os.getenv("TEMP_DIR", "/tmp/clipfetch_flask"))
 os.makedirs(TEMP_DIR, exist_ok=True)
 DOWNLOAD_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120"))
 TICKET_EXPIRATION_SECONDS = int(os.getenv("TICKET_EXPIRATION_SECONDS", "300"))
@@ -52,59 +64,72 @@ ALLOWED_DOMAINS = {
     "youtu.be"
 }
 
+ALLOWED_BITRATES = {48, 64, 96, 128, 160, 192, 256, 320}
+
 # In-memory download tickets
-# Format: {ticket_id: {"file_path": str, "filename": str, "mimetype": str, "created_at": float}}
+# Format: {ticket_id: {"file_path": str, "download_name": str, "mimetype": str, "created_at": float}}
 tickets: Dict[str, Dict[str, Any]] = {}
 tickets_lock = threading.Lock()
 
 
 def is_safe_url(url: str) -> bool:
-    """Validate that the URL belongs strictly to supported YouTube domains."""
+    """Validate that the URL belongs strictly to supported YouTube domains with SSRF defenses."""
     if not url or not isinstance(url, str):
         return False
     try:
         parsed = urlparse(url.strip())
         if parsed.scheme not in ("http", "https"):
             return False
+        if parsed.username or parsed.password:
+            return False
         hostname = (parsed.hostname or "").lower()
         if not hostname:
             return False
-        # Reject private/internal IP patterns
+        # Reject private/internal IP patterns and loopbacks
         if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254"):
             return False
-        if hostname.startswith("10.") or hostname.startswith("192.168.") or hostname.startswith("172."):
+        if (
+            hostname.startswith("10.") or
+            hostname.startswith("192.168.") or
+            hostname.startswith("172.") or
+            hostname.endswith(".local") or
+            hostname.endswith(".internal")
+        ):
             return False
-        # Match allowed domain
+        # Match strictly allowed domains
         return any(hostname == d or hostname.endswith("." + d) for d in ALLOWED_DOMAINS)
     except Exception:
         return False
 
 
-def sanitize_filename(name: str) -> str:
-    """Sanitize filename to prevent directory traversal and remove illegal chars."""
+def sanitize_download_filename(name: str, fallback: str = "ClipFetch_Video", ext: str = "mp4") -> str:
+    """Sanitize attachment filename for the browser Content-Disposition header."""
     if not name:
-        return "ClipFetch_Video"
-    # Remove directory separators and dangerous characters
-    cleaned = re.sub(r'[\\/*?:"<>|]', "", name)
+        return f"{fallback}.{ext}"
+    cleaned = re.sub(r'[\\/*?:"<>|\r\n\t]', "", name)
     cleaned = re.sub(r"\s+", "_", cleaned.strip())
-    # Cap length to 100 characters
-    if len(cleaned) > 100:
-        cleaned = cleaned[:97] + "..."
-    return cleaned or "ClipFetch_Video"
+    if len(cleaned) > 80:
+        cleaned = cleaned[:77] + "..."
+    if not cleaned:
+        cleaned = fallback
+    return f"{cleaned}.{ext}"
 
 
-def delayed_cleanup(file_path: str, ticket_id: str, delay: int = 30):
-    """Clean up temporary files after delivery."""
+def delayed_cleanup(dir_path: str, ticket_id: str, delay: int = 30):
+    """Clean up temporary directory and tickets after delivery."""
     def worker():
         time.sleep(delay)
         with tickets_lock:
             tickets.pop(ticket_id, None)
         try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.info(f"Cleaned up temporary file: {file_path}")
+            temp_dir_abs = os.path.abspath(TEMP_DIR)
+            dir_abs = os.path.abspath(dir_path)
+            # Ensure path is safely within TEMP_DIR before removing
+            if dir_abs.startswith(temp_dir_abs + os.sep) and os.path.isdir(dir_abs):
+                shutil.rmtree(dir_abs, ignore_errors=True)
+                logger.info(f"Cleaned up temporary directory: {dir_abs}")
         except Exception as e:
-            logger.warning(f"Error deleting temp file {file_path}: {e}")
+            logger.warning(f"Error deleting temp dir {dir_path}: {e}")
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -181,11 +206,9 @@ def health():
     """Health check endpoint exposing dependency availability."""
     ffmpeg_available = shutil.which("ffmpeg") is not None
     ffprobe_available = shutil.which("ffprobe") is not None
-    
-    # Check pytubefix import
     pytubefix_available = False
     try:
-        import pytubefix
+        import pytubefix  # noqa: F401
         pytubefix_available = True
     except ImportError:
         pass
@@ -237,35 +260,29 @@ def analyze():
 
     try:
         from pytubefix import YouTube
-        from pytubefix.exceptions import VideoUnavailable, RegexMatchError, ExtractError
+        from pytubefix.exceptions import VideoUnavailable, RegexMatchError
     except ImportError:
         return jsonify({
             "success": False,
             "error": {
                 "code": "DEPENDENCY_ERROR",
-                "message": "pytubefix library is not installed on this server. Run: pip install pytubefix"
+                "message": "pytubefix library is not installed on this server."
             }
         }), 500
 
     try:
-        # Initialize YouTube with WEB client for highest reliability
         yt = YouTube(url, client='WEB')
-        
-        # Extract basic metadata
         title = yt.title or "YouTube Video"
         if len(title) > 190:
             title = title[:187] + "..."
-
         thumbnail = yt.thumbnail_url or None
         author = yt.author or "YouTube Creator"
         duration = yt.length or 0
 
-        # Discover available video formats
         streams = yt.streams
         seen_heights = set()
         video_formats: List[Dict[str, Any]] = []
 
-        # 1. Progressive streams (contain both audio and video, typical for 720p and 360p)
         progressive_streams = streams.filter(progressive=True, file_extension='mp4')
         for stream in progressive_streams:
             res_str = stream.resolution or ""
@@ -276,7 +293,6 @@ def analyze():
             if height in seen_heights or height < 144:
                 continue
             seen_heights.add(height)
-
             try:
                 filesize = stream.filesize
             except Exception:
@@ -299,7 +315,6 @@ def analyze():
                 "mediaType": "video"
             })
 
-        # 2. Adaptive streams (e.g. 1080p, 1440p, 2160p Full HD video streams)
         adaptive_streams = streams.filter(adaptive=True, only_video=True, file_extension='mp4')
         for stream in adaptive_streams:
             res_str = stream.resolution or ""
@@ -310,7 +325,6 @@ def analyze():
             if height in seen_heights or height < 144:
                 continue
             seen_heights.add(height)
-
             try:
                 filesize = stream.filesize
             except Exception:
@@ -326,17 +340,15 @@ def analyze():
                 "filesize": filesize,
                 "filesizeFormatted": format_filesize(filesize),
                 "url": url,
-                "hasAudio": True,  # Will be muxed with audio on download via ffmpeg
+                "hasAudio": True,
                 "hasVideo": True,
                 "isHd": height >= 720,
                 "isAdaptive": True,
                 "mediaType": "video"
             })
 
-        # Sort video formats ascending by height (360p -> 720p -> 1080p)
         video_formats.sort(key=lambda x: x["height"])
 
-        # Audio options
         audio_options = [
             {
                 "id": "audio-mp3-48k",
@@ -390,7 +402,6 @@ def analyze():
             "originalUrl": url
         }
 
-        # Return both top-level and data wrapper for full client compatibility
         return jsonify({
             **result_payload,
             "data": result_payload
@@ -418,7 +429,7 @@ def analyze():
             "success": False,
             "error": {
                 "code": "EXTRACTION_FAILED",
-                "message": f"Failed to extract video details: {str(e)}"
+                "message": "Failed to extract video details. Please verify the URL and try again."
             }
         }), 502
 
@@ -442,10 +453,16 @@ def download():
         }), 400
 
     media_type = data.get("mediaType") or data.get("type") or "video"
-    format_id = data.get("formatId") or data.get("format_id") or ""
-    bitrate = data.get("audioBitrate") or data.get("bitrate") or 128
-    raw_title = data.get("title") or "video"
-    safe_title = sanitize_filename(raw_title)
+    format_id = str(data.get("formatId") or data.get("format_id") or "")
+
+    # Security: Strictly validate bitrate against allowed integer set
+    try:
+        raw_bitrate = int(data.get("audioBitrate") or data.get("bitrate") or 128)
+    except (ValueError, TypeError):
+        raw_bitrate = 128
+    bitrate = raw_bitrate if raw_bitrate in ALLOWED_BITRATES else 128
+
+    raw_title = str(data.get("title") or "video")
 
     try:
         from pytubefix import YouTube
@@ -455,6 +472,7 @@ def download():
             "error": {"code": "DEPENDENCY_ERROR", "message": "pytubefix is not installed."}
         }), 500
 
+    # Security: Generate clean, random directory inside TEMP_DIR
     ticket_id = str(uuid.uuid4())
     ticket_dir = os.path.join(TEMP_DIR, ticket_id)
     os.makedirs(ticket_dir, exist_ok=True)
@@ -464,7 +482,6 @@ def download():
         streams = yt.streams
 
         if media_type == "audio":
-            # Audio-only extraction and MP3 conversion
             audio_stream = streams.filter(only_audio=True).order_by('abr').desc().first()
             if not audio_stream:
                 audio_stream = streams.filter(only_audio=True).first()
@@ -474,15 +491,16 @@ def download():
                     "error": {"code": "NO_AUDIO_STREAM", "message": "No audio stream available for this video."}
                 }), 404
 
+            # Security: Use fixed internal file paths to prevent uncontrolled path expressions
             temp_audio_file = os.path.join(ticket_dir, "raw_audio.m4a")
             audio_stream.download(output_path=ticket_dir, filename="raw_audio.m4a")
 
-            final_filename = f"ClipFetch_{safe_title}_{bitrate}kbps.mp3"
-            final_output_path = os.path.join(ticket_dir, final_filename)
+            final_output_path = os.path.join(ticket_dir, "output.mp3")
+            safe_download_name = sanitize_download_filename(raw_title, "ClipFetch_Audio", f"{bitrate}kbps.mp3")
 
-            # Convert to MP3 using ffmpeg if available
             ffmpeg_path = shutil.which("ffmpeg")
             if ffmpeg_path:
+                # Security: Controlled command arguments with fixed binary, integers, and paths
                 cmd = [
                     ffmpeg_path, "-y",
                     "-i", temp_audio_file,
@@ -495,23 +513,19 @@ def download():
                 subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
                 mimetype = "audio/mpeg"
             else:
-                # Fallback to serving raw audio stream as m4a
-                final_filename = f"ClipFetch_{safe_title}.m4a"
-                final_output_path = os.path.join(ticket_dir, final_filename)
+                final_output_path = os.path.join(ticket_dir, "output.m4a")
+                safe_download_name = sanitize_download_filename(raw_title, "ClipFetch_Audio", "m4a")
                 os.rename(temp_audio_file, final_output_path)
                 mimetype = "audio/mp4"
 
         else:
-            # Video download (progressive or adaptive merged)
             chosen_stream = None
 
-            # Attempt to extract itag from format_id (e.g. yt-137-1080p -> 137)
             itag_match = re.search(r"yt-(\d+)", format_id)
             if itag_match:
                 itag_val = int(itag_match.group(1))
                 chosen_stream = streams.get_by_itag(itag_val)
 
-            # If not matched by itag, search by resolution or default to best progressive
             if not chosen_stream:
                 res_match = re.search(r"(\d{3,4})p?", format_id)
                 target_res = f"{res_match.group(1)}p" if res_match else "720p"
@@ -526,14 +540,13 @@ def download():
                     "error": {"code": "NO_VIDEO_STREAM", "message": "No suitable video stream found."}
                 }), 404
 
-            final_filename = f"ClipFetch_{safe_title}.mp4"
-            final_output_path = os.path.join(ticket_dir, final_filename)
+            # Security: Use fixed internal file path
+            final_output_path = os.path.join(ticket_dir, "output.mp4")
+            safe_download_name = sanitize_download_filename(raw_title, "ClipFetch_Video", "mp4")
 
             if chosen_stream.is_progressive:
-                # Progressive: Already includes video + audio
-                chosen_stream.download(output_path=ticket_dir, filename=final_filename)
+                chosen_stream.download(output_path=ticket_dir, filename="output.mp4")
             else:
-                # Adaptive (e.g. 1080p video only): download video + audio and merge with ffmpeg
                 video_temp = os.path.join(ticket_dir, "video_stream.mp4")
                 chosen_stream.download(output_path=ticket_dir, filename="video_stream.mp4")
 
@@ -544,7 +557,7 @@ def download():
                     audio_temp = os.path.join(ticket_dir, "audio_stream.m4a")
                     best_audio.download(output_path=ticket_dir, filename="audio_stream.m4a")
 
-                    # Merge with ffmpeg
+                    # Security: Controlled command execution with strict arguments
                     merge_cmd = [
                         ffmpeg_path, "-y",
                         "-i", video_temp,
@@ -556,7 +569,6 @@ def download():
                     ]
                     subprocess.run(merge_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
                 else:
-                    # If ffmpeg is absent, rename video stream
                     os.rename(video_temp, final_output_path)
 
             mimetype = "video/mp4"
@@ -571,7 +583,7 @@ def download():
         with tickets_lock:
             tickets[ticket_id] = {
                 "file_path": final_output_path,
-                "filename": final_filename,
+                "download_name": safe_download_name,
                 "mimetype": mimetype,
                 "created_at": time.time()
             }
@@ -582,11 +594,11 @@ def download():
             "success": True,
             "download_id": ticket_id,
             "downloadUrl": download_relative_url,
-            "filename": final_filename,
+            "filename": safe_download_name,
             "data": {
                 "download_id": ticket_id,
                 "downloadUrl": download_relative_url,
-                "filename": final_filename
+                "filename": safe_download_name
             }
         }
 
@@ -594,31 +606,46 @@ def download():
 
     except Exception as e:
         logger.error(f"Download processing failed: {e}", exc_info=True)
-        # Clean up directory on error
         shutil.rmtree(ticket_dir, ignore_errors=True)
         return jsonify({
             "success": False,
             "error": {
                 "code": "DOWNLOAD_ERROR",
-                "message": f"Download failed: {str(e)}"
+                "message": "Failed to process download. Please check the video URL and try again."
             }
         }), 502
 
 
 @app.route("/api/download-file/<ticket_id>", methods=["GET"])
 def stream_file(ticket_id: str):
-    """Serve the generated file and schedule its cleanup."""
+    """Serve the generated file safely and schedule its cleanup."""
+    # Security: Validate ticket_id pattern strictly to avoid path traversal
+    if not re.match(r"^[0-9a-fA-F-]{36}$", ticket_id):
+        return jsonify({
+            "success": False,
+            "error": {"code": "INVALID_ID", "message": "Invalid download ticket identifier."}
+        }), 400
+
     with tickets_lock:
         ticket = tickets.get(ticket_id)
 
-    if not ticket or not os.path.exists(ticket["file_path"]):
+    if not ticket:
         return jsonify({
             "success": False,
             "error": {"code": "NOT_FOUND", "message": "Download link expired or invalid."}
         }), 404
 
-    file_path = ticket["file_path"]
-    filename = ticket["filename"]
+    file_path = os.path.abspath(ticket["file_path"])
+    temp_dir_abs = os.path.abspath(TEMP_DIR)
+
+    # Security: Verify that the target file is strictly confined within TEMP_DIR
+    if not file_path.startswith(temp_dir_abs + os.sep) or not os.path.exists(file_path):
+        return jsonify({
+            "success": False,
+            "error": {"code": "NOT_FOUND", "message": "File not found or access restricted."}
+        }), 404
+
+    download_name = ticket["download_name"]
     mimetype = ticket.get("mimetype", "application/octet-stream")
 
     # Schedule deferred cleanup after download finishes
@@ -627,7 +654,7 @@ def stream_file(ticket_id: str):
     return send_file(
         file_path,
         as_attachment=True,
-        download_name=filename,
+        download_name=download_name,
         mimetype=mimetype,
         max_age=0
     )

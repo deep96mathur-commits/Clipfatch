@@ -273,10 +273,10 @@ def download(
                 403,
                 f"{platform_label} restricted this media behind a login checkpoint or private profile."
             )
-        raise HTTPException(422, err_msg)
-    except Exception as e:
+        raise HTTPException(422, "Unable to extract media from this URL. The content may be private or restricted.")
+    except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise HTTPException(500, f"Download failed: {str(e)}")
+        raise HTTPException(500, "Download failed. Please try again.")
 
     files = [p for p in tmp.iterdir() if p.is_file()]
     if not files:
@@ -304,8 +304,8 @@ app = FastAPI(title="ClipFetch Media API (YouTube & Instagram)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 app.include_router(router, prefix="/api")

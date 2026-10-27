@@ -296,20 +296,31 @@ export class FacebookAdapter implements PlatformAdapter {
   }
 
   private unescapeFbUrl(raw: string): string {
-    return raw
-      .replace(/\\u0025/g, '%')
-      .replace(/\\u0026/g, '&')
-      .replace(/\\\/|\\\//g, '/')
-      .replace(/\\/g, '')
-      .replace(/&amp;/g, '&');
+    if (!raw || typeof raw !== 'string') return '';
+    // Single-pass replacement for unicode escape sequences to prevent double-unescaping
+    let cleaned = raw.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return isNaN(code) ? '' : String.fromCharCode(code);
+    });
+    // Replace escaped slashes and HTML entity ampersands
+    cleaned = cleaned.replace(/\\\//g, '/').replace(/\\\\/g, '\\');
+    cleaned = cleaned.replace(/&amp;/g, '&');
+    return cleaned;
   }
 
   private isValidFbVideoUrl(url: string): boolean {
     try {
       const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return false;
+      }
       const host = parsed.hostname.toLowerCase();
+      const allowedHosts = ['facebook.com', 'fbcdn.net', 'akamaihd.net'];
+      const isAllowedHost = allowedHosts.some(
+        (h) => host === h || host.endsWith('.' + h)
+      );
       return (
-        (host.includes('fbcdn.net') || host.includes('facebook.com') || host.includes('akamaihd.net')) &&
+        isAllowedHost &&
         (parsed.pathname.includes('.mp4') || parsed.pathname.includes('/v/') || parsed.searchParams.has('oe'))
       );
     } catch {

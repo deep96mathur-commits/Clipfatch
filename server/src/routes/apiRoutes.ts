@@ -426,12 +426,13 @@ apiRouter.get('/download', async (req: Request, res: Response, next: NextFunctio
       try {
         await streamMediaToClient(rawUrl, res, title, rawUrl, 'audio-mp3-128k', 'audio', 128);
       } catch (audioErr: unknown) {
+        console.error('[Download] Audio extraction error:', (audioErr as Error)?.message);
         if (!res.headersSent) {
           return res.status(502).json({
             success: false,
             error: {
               code: 'AUDIO_EXTRACTION_FAILED',
-              message: (audioErr as Error)?.message || 'Failed to process audio download.',
+              message: 'Failed to process audio download. Please try again later.',
             },
           });
         }
@@ -488,12 +489,13 @@ apiRouter.get('/download-file/:download_id', async (req: Request, res: Response,
           ticket.audioBitrate
         );
       } catch (audioErr: unknown) {
+        console.error('[Download] Ticket audio extraction error:', (audioErr as Error)?.message);
         if (!res.headersSent) {
           return res.status(502).json({
             success: false,
             error: {
               code: 'AUDIO_EXTRACTION_FAILED',
-              message: (audioErr as Error)?.message || 'Failed to process audio download.',
+              message: 'Failed to process audio download. Please try again later.',
             },
           });
         }
