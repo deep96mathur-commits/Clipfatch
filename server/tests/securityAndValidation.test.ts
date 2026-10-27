@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { validateAndClassifyUrl, isPrivateOrReservedIp, validateMediaDownloadUrl } from '../src/utils/ssrfGuard.js';
 import { sanitizeFilename } from '../src/services/downloadService.js';
-import { videoInfoSchema, videoDownloadSchema } from '../src/validators/videoValidator.js';
+import {
+  videoInfoSchema,
+  videoDownloadSchema,
+  videoInfoQuerySchema,
+  downloadQuerySchema,
+  videoStreamQuerySchema,
+} from '../src/validators/videoValidator.js';
+import { createServerApp } from '../src/app.js';
+import type { Server } from 'http';
 import { adapterRegistry } from '../src/services/adapters/AdapterRegistry.js';
 import { deduplicateAndSortVideoFormats, generateAudioFormats } from '../src/utils/formatNormalizer.js';
 import { probeMediaFile } from '../src/utils/mediaProbe.js';
@@ -419,6 +427,298 @@ describe('Download Pipeline Regression Tests (5 Cases)', () => {
     expect(probe.size).toBeGreaterThan(0);
   });
 });
+
+describe('Query Parameter Validation & Tampering Prevention (Zod Schema Tests)', () => {
+  describe('videoInfoQuerySchema', () => {
+    it('rejects repeated query parameters passed as arrays', () => {
+      const parsed = videoInfoQuerySchema.safeParse({
+        url: ['https://www.facebook.com/watch/?v=1', 'https://www.facebook.com/watch/?v=2'],
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    it('rejects object-style query parameters', () => {
+      const parsed = videoInfoQuerySchema.safeParse({
+        url: { malicious: 'true' },
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    it('rejects missing or empty url parameter', () => {
+      const missing = videoInfoQuerySchema.safeParse({});
+      expect(missing.success).toBe(false);
+
+      const empty = videoInfoQuerySchema.safeParse({ url: '' });
+      expect(empty.success).toBe(false);
+    });
+
+    it('accepts valid string Facebook URL', () => {
+      const parsed = videoInfoQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123456',
+      });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data.url).toBe('https://www.facebook.com/watch/?v=123456');
+      }
+    });
+  });
+
+  describe('downloadQuerySchema', () => {
+    it('rejects repeated query parameters passed as arrays', () => {
+      const repeatedUrl = downloadQuerySchema.safeParse({
+        url: ['https://www.facebook.com/watch/?v=1', 'https://www.facebook.com/watch/?v=2'],
+      });
+      expect(repeatedUrl.success).toBe(false);
+
+      const repeatedType = downloadQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123',
+        type: ['video', 'audio'],
+      });
+      expect(repeatedType.success).toBe(false);
+
+      const repeatedQuality = downloadQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123',
+        quality: ['720p', '480p'],
+      });
+      expect(repeatedQuality.success).toBe(false);
+    });
+
+    it('rejects object-style query parameters', () => {
+      const objUrl = downloadQuerySchema.safeParse({
+        url: { link: 'https://facebook.com' },
+      });
+      expect(objUrl.success).toBe(false);
+
+      const objTitle = downloadQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123',
+        title: { key: 'val' },
+      });
+      expect(objTitle.success).toBe(false);
+    });
+
+    it('rejects invalid enum values for type', () => {
+      const invalidType = downloadQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123',
+        type: 'executable',
+      });
+      expect(invalidType.success).toBe(false);
+    });
+
+    it('accepts valid download parameters and applies defaults', () => {
+      const minimal = downloadQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123',
+      });
+      expect(minimal.success).toBe(true);
+      if (minimal.success) {
+        expect(minimal.data.type).toBe('video');
+        expect(minimal.data.quality).toBe('best');
+      }
+
+      const explicit = downloadQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123',
+        type: 'audio',
+        quality: '128',
+        title: 'Custom Title',
+      });
+      expect(explicit.success).toBe(true);
+      if (explicit.success) {
+        expect(explicit.data.type).toBe('audio');
+        expect(explicit.data.quality).toBe('128');
+        expect(explicit.data.title).toBe('Custom Title');
+      }
+    });
+  });
+
+  describe('videoStreamQuerySchema', () => {
+    it('rejects repeated query parameters passed as arrays', () => {
+      const repeatedUrl = videoStreamQuerySchema.safeParse({
+        url: ['https://www.facebook.com/1', 'https://www.facebook.com/2'],
+      });
+      expect(repeatedUrl.success).toBe(false);
+
+      const repeatedPageUrl = videoStreamQuerySchema.safeParse({
+        pageUrl: ['https://www.facebook.com/1', 'https://www.facebook.com/2'],
+      });
+      expect(repeatedPageUrl.success).toBe(false);
+    });
+
+    it('rejects object-style query parameters', () => {
+      const objTitle = videoStreamQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123',
+        title: { hack: 1 },
+      });
+      expect(objTitle.success).toBe(false);
+    });
+
+    it('rejects when both url and pageUrl are missing', () => {
+      const parsed = videoStreamQuerySchema.safeParse({
+        formatId: '720p',
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    it('rejects non-numeric audioBitrate', () => {
+      const parsed = videoStreamQuerySchema.safeParse({
+        url: 'https://www.facebook.com/watch/?v=123',
+        audioBitrate: 'abc',
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    it('accepts valid stream query with either url or pageUrl', () => {
+      const withUrl = videoStreamQuerySchema.safeParse({
+        url: 'https://video.xx.fbcdn.net/sample.mp4',
+        title: 'Sample Video',
+      });
+      expect(withUrl.success).toBe(true);
+
+      const withPageUrl = videoStreamQuerySchema.safeParse({
+        pageUrl: 'https://www.facebook.com/watch/?v=123',
+        formatId: '720p',
+        mediaType: 'video',
+      });
+      expect(withPageUrl.success).toBe(true);
+    });
+  });
+});
+
+describe('HTTP Endpoint Query Tampering Regression Tests', () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const app = createServerApp();
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        if (typeof addr === 'object' && addr !== null) {
+          baseUrl = `http://127.0.0.1:${addr.port}`;
+        }
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      if (server) {
+        server.close(() => resolve());
+      } else {
+        resolve();
+      }
+    });
+  });
+
+  describe('GET /api/info validation', () => {
+    it('returns HTTP 400 for repeated url query parameters (?url=a&url=b)', async () => {
+      const res = await fetch(`${baseUrl}/api/info?url=https://facebook.com/1&url=https://facebook.com/2`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 for object-style query parameters (?url[hack]=evil)', async () => {
+      const res = await fetch(`${baseUrl}/api/info?url[hack]=evil`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 for missing url parameter', async () => {
+      const res = await fetch(`${baseUrl}/api/info`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 for invalid url format', async () => {
+      const res = await fetch(`${baseUrl}/api/info?url=not-a-valid-url`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('GET /api/download validation', () => {
+    it('returns HTTP 400 for repeated url query parameters', async () => {
+      const res = await fetch(`${baseUrl}/api/download?url=https://facebook.com/1&url=https://facebook.com/2`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 for repeated type query parameters', async () => {
+      const res = await fetch(`${baseUrl}/api/download?url=https://facebook.com/watch/?v=123&type=video&type=audio`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 for invalid type parameter', async () => {
+      const res = await fetch(`${baseUrl}/api/download?url=https://facebook.com/watch/?v=123&type=malicious`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 for missing url parameter', async () => {
+      const res = await fetch(`${baseUrl}/api/download`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('GET /api/video/stream validation', () => {
+    it('returns HTTP 400 for repeated url query parameters', async () => {
+      const res = await fetch(`${baseUrl}/api/video/stream?url=https://facebook.com/1&url=https://facebook.com/2`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 for repeated pageUrl query parameters', async () => {
+      const res = await fetch(`${baseUrl}/api/video/stream?pageUrl=https://facebook.com/1&pageUrl=https://facebook.com/2`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 when neither url nor pageUrl is provided', async () => {
+      const res = await fetch(`${baseUrl}/api/video/stream?title=Test`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns HTTP 400 for non-numeric audioBitrate', async () => {
+      const res = await fetch(`${baseUrl}/api/video/stream?url=https://facebook.com/watch/?v=123&audioBitrate=invalid`);
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('HEAD /api/download safety', () => {
+    it('handles repeated type gracefully without throwing', async () => {
+      const res = await fetch(`${baseUrl}/api/download?type=audio&type=video`, { method: 'HEAD' });
+      expect(res.status).toBe(200);
+    });
+  });
+});
+
 
 
 

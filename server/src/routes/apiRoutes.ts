@@ -1,7 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
-import { videoInfoSchema, videoDownloadSchema } from '../validators/videoValidator.js';
+import {
+  videoInfoSchema,
+  videoDownloadSchema,
+  videoInfoQuerySchema,
+  downloadQuerySchema,
+  videoStreamQuerySchema,
+} from '../validators/videoValidator.js';
 import { processVideoInfo } from '../services/videoService.js';
 import { streamMediaToClient, sanitizeFilename } from '../services/downloadService.js';
 import { validateMediaDownloadUrl } from '../utils/ssrfGuard.js';
@@ -159,11 +165,8 @@ apiRouter.post('/video/info', async (req: Request, res: Response, next: NextFunc
 // GET /api/info - YouTube & media info endpoint (compatible with ytdl_api)
 apiRouter.get('/info', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rawUrl = req.query.url as string;
-    if (!rawUrl) {
-      throw new AppError('The url query parameter is required', 400, 'MISSING_URL');
-    }
-    const videoData = await processVideoInfo(rawUrl);
+    const validated = videoInfoQuerySchema.parse(req.query);
+    const videoData = await processVideoInfo(validated.url);
 
     const heights = videoData.formats
       .filter((f) => !f.isAudio && f.height && f.height >= 144)
@@ -192,14 +195,18 @@ apiRouter.get('/info', async (req: Request, res: Response, next: NextFunction) =
 // POST /api/info - Support JSON body { url }
 apiRouter.post('/info', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rawUrl = (req.body?.url || req.query.url) as string;
-    if (!rawUrl) {
-      throw new AppError('The url parameter is required', 400, 'MISSING_URL');
-    }
-    const videoData = await processVideoInfo(rawUrl);
+    const rawUrl =
+      typeof req.body?.url === 'string'
+        ? req.body.url
+        : typeof req.query?.url === 'string'
+          ? req.query.url
+          : undefined;
+
+    const validated = videoInfoSchema.parse({ url: rawUrl });
+    const videoData = await processVideoInfo(validated.url);
 
     return res.json({
-      url: rawUrl,
+      url: validated.url,
       title: (videoData.title || 'Instagram Reel').slice(0, 140),
       uploader: videoData.author || null,
       thumbnail: videoData.thumbnail || null,
@@ -397,7 +404,8 @@ apiRouter.all('/check', (_req: Request, res: Response) => {
 
 // HEAD /api/download - Lightweight pre-check endpoint
 apiRouter.head('/download', (req: Request, res: Response) => {
-  const type = (req.query.type as string) || 'video';
+  const typeParam = typeof req.query.type === 'string' ? req.query.type : 'video';
+  const type = typeParam === 'audio' ? 'audio' : 'video';
   res.setHeader('Content-Type', type === 'audio' ? 'audio/mpeg' : 'video/mp4');
   res.setHeader('Content-Disposition', `attachment; filename="ClipFetch_${type === 'audio' ? 'audio.mp3' : 'media.mp4'}"`);
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -408,14 +416,11 @@ apiRouter.head('/download', (req: Request, res: Response) => {
 // GET /api/download - Direct streaming download endpoint (compatible with ytdl_api)
 apiRouter.get('/download', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rawUrl = req.query.url as string;
-    const type = (req.query.type as string) || 'video';
-    const quality = (req.query.quality as string) || 'best';
-    const title = req.query.title as string | undefined;
-
-    if (!rawUrl) {
-      throw new AppError('The url query parameter is required', 400, 'MISSING_URL');
-    }
+    const validated = downloadQuerySchema.parse(req.query);
+    const rawUrl = validated.url;
+    const type = validated.type;
+    const quality = validated.quality;
+    const title = validated.title;
 
     if (type === 'audio') {
       try {
@@ -513,17 +518,13 @@ apiRouter.get('/download-file/:download_id', async (req: Request, res: Response,
 // GET /api/video/stream - Backward compatibility query-param streaming endpoint
 apiRouter.get('/video/stream', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rawUrl = req.query.url as string;
-    const title = req.query.title as string | undefined;
-    const pageUrl = req.query.pageUrl as string | undefined;
-    const formatId = req.query.formatId as string | undefined;
-    const mediaType = req.query.mediaType as 'video' | 'audio' | undefined;
-    const audioBitrateRaw = req.query.audioBitrate as string | undefined;
-    const audioBitrate = audioBitrateRaw ? parseInt(audioBitrateRaw, 10) : undefined;
-
-    if (!rawUrl && !pageUrl) {
-      throw new AppError('Media URL or page URL parameter is required for streaming', 400, 'MISSING_URL');
-    }
+    const validated = videoStreamQuerySchema.parse(req.query);
+    const rawUrl = validated.url;
+    const title = validated.title;
+    const pageUrl = validated.pageUrl;
+    const formatId = validated.formatId;
+    const mediaType = validated.mediaType;
+    const audioBitrate = validated.audioBitrate ? parseInt(validated.audioBitrate, 10) : undefined;
 
     await streamMediaToClient(rawUrl || '', res, title, pageUrl, formatId, mediaType, audioBitrate);
   } catch (err) {
