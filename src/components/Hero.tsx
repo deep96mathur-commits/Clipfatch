@@ -90,7 +90,9 @@ export const Hero = forwardRef<HeroHandle, HeroProps>(({
         return;
       }
       const host = parsed.hostname.toLowerCase();
-      if (!host.includes('facebook.com') && !host.includes('fb.watch') && !host.includes('fb.gg')) {
+      const allowedDomains = ['facebook.com', 'fb.watch', 'fb.gg'];
+      const isAllowedHost = allowedDomains.some((domain) => host === domain || host.endsWith('.' + domain));
+      if (!isAllowedHost) {
         setInputError('Please enter a valid Facebook link (facebook.com or fb.watch).');
         return;
       }

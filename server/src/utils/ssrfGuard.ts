@@ -121,15 +121,22 @@ export async function validateAndClassifyUrl(
     };
   }
 
-  // Check supported domains (strict exact match)
-  const platform = SUPPORTED_DOMAINS[hostname];
-  if (!platform) {
-    // Check if user passed a lookalike domain (e.g. facebook.com.attacker.com or evil-facebook.com)
-    const isLookalike = ['facebook.com', 'fb.watch', 'fb.gg'].some((domain) => {
-      if (hostname.endsWith('.' + domain)) return true;
-      const parts = hostname.split('.');
-      return parts.some((p) => p === 'facebook' || p.startsWith('facebook-') || p.endsWith('-facebook'));
-    });
+  // Check supported domains: strictly facebook.com, fb.watch, fb.gg or their subdomains
+  const isFacebookDomain =
+    hostname === 'facebook.com' ||
+    hostname.endsWith('.facebook.com') ||
+    hostname === 'fb.watch' ||
+    hostname.endsWith('.fb.watch') ||
+    hostname === 'fb.gg' ||
+    hostname.endsWith('.fb.gg');
+
+  if (!isFacebookDomain) {
+    // Check if user passed a lookalike domain (e.g. facebook.com.attacker.com, evil-facebook.com, facebook-attacker.com)
+    const isLookalike =
+      hostname.includes('facebook') ||
+      hostname.includes('fbcdn') ||
+      hostname.includes('fb.watch') ||
+      hostname.endsWith('.com.br') && hostname.includes('fb');
 
     if (isLookalike) {
       return {
@@ -147,6 +154,8 @@ export async function validateAndClassifyUrl(
       error: 'Unsupported platform. ClipFetch currently only supports Facebook videos, reels, and watch posts.',
     };
   }
+
+  const platform: PlatformType = 'facebook';
 
   // Resolve DNS to verify the target IP is not private/reserved (SSRF prevention)
   try {

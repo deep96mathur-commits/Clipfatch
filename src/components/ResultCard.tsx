@@ -23,20 +23,34 @@ interface ResultCardProps {
 }
 
 export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
-  // Extract or synthesize strictly the 480p and 720p video formats
+  // Extract video formats sorted by resolution
   const rawVideoFormats = video.formats.filter((f) => !f.isAudio && f.mediaType !== 'audio');
-
-  const raw480 =
-    rawVideoFormats.find((f) => f.height === 480) ||
-    rawVideoFormats.find((f) => f.id.includes('480'));
-  const raw720 =
-    rawVideoFormats.find((f) => f.height === 720) ||
-    rawVideoFormats.find((f) => f.id.includes('720'));
+  const sortedVideos = [...rawVideoFormats].sort((a, b) => (a.height || 0) - (b.height || 0));
 
   const fallbackUrl = rawVideoFormats[0]?.url || video.originalUrl;
 
-  // STRICT REQUIREMENT: Only two formats for video: 480p and 720p
-  const standardQualityFormat: VideoFormat = raw480 || {
+  // Best/Highest available quality format from source (no artificial 720p cap)
+  const highestVideo = video.highQuality || sortedVideos[sortedVideos.length - 1];
+  const highQualityFormat: VideoFormat = highestVideo || {
+    id: 'fb-best',
+    format: 'MP4',
+    quality: 'Highest Quality',
+    resolution: 'Best Available',
+    height: 720,
+    url: fallbackUrl,
+    hasAudio: true,
+    hasVideo: true,
+    isHd: true,
+    mediaType: 'video',
+  };
+
+  // Standard quality format (480p SD or lowest available)
+  const standardVideo =
+    video.standardQuality ||
+    sortedVideos.find((f) => f.height === 480) ||
+    (sortedVideos.length > 1 ? sortedVideos[0] : null);
+
+  const standardQualityFormat: VideoFormat = standardVideo || {
     id: 'fb-480p',
     format: 'MP4',
     quality: '480p (SD)',
@@ -49,18 +63,8 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
     mediaType: 'video',
   };
 
-  const highQualityFormat: VideoFormat = raw720 || {
-    id: 'fb-720p',
-    format: 'MP4',
-    quality: '720p (HD)',
-    resolution: '1280x720',
-    height: 720,
-    url: fallbackUrl,
-    hasAudio: true,
-    hasVideo: true,
-    isHd: true,
-    mediaType: 'video',
-  };
+  const highestLabel = highQualityFormat.quality || (highQualityFormat.height ? `${highQualityFormat.height}p` : 'Highest Quality');
+  const standardLabel = standardQualityFormat.quality || (standardQualityFormat.height ? `${standardQualityFormat.height}p` : '480p (SD)');
 
   // STRICT REQUIREMENT: Only audio format is 128kbps
   const raw128Audio = video.formats.find(
@@ -104,7 +108,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
     return null;
   };
 
-  const executeDownload = async (targetFormat: VideoFormat, targetKey: '480' | '720' | '128') => {
+  const executeDownload = async (targetFormat: VideoFormat, targetKey: 'best' | '480' | '128' | string) => {
     setActiveDownloadingTarget(targetKey);
     setDownloadError(null);
     setDownloadErrorDebug(null);
@@ -164,8 +168,8 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
       // 1. Prepare download ticket/endpoint from the backend
       const result = await triggerDownload({
         url: video.originalUrl,
-        formatId: targetKey === '480' ? 'fb-480p' : targetKey === '720' ? 'fb-720p' : 'audio-mp3-128k',
-        quality: targetKey === '480' ? 'standard' : targetKey === '720' ? 'high' : '128',
+        formatId: targetKey === '480' ? (standardQualityFormat.id || 'fb-480p') : (highQualityFormat.id || 'best'),
+        quality: targetKey === '480' ? 'standard' : 'best',
         targetMediaUrl: targetFormat.url,
         title: video.title
           ? video.title.length > 190
@@ -375,39 +379,39 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
                     <span>Formats</span>
                   </div>
                   <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200">
-                    2 video + 1 audio
+                    {rawVideoFormats.length > 0 ? `${rawVideoFormats.length} video + 1 audio` : 'Highest + MP3'}
                   </span>
                 </div>
               </div>
 
-              {/* Dedicated Download Buttons (720p HD, 480p, MP3 High Quality) */}
+              {/* Dedicated Download Buttons (Highest Quality, Standard 480p, MP3 High Quality) */}
               {video.downloadAvailable ? (
                 <div className="flex flex-col gap-3 mb-6">
-                  {/* Button 1: 720p HD */}
+                  {/* Button 1: Highest Available Quality */}
                   <button
                     type="button"
-                    title="Download Facebook video in 720p HD"
-                    onClick={() => executeDownload(highQualityFormat, '720')}
+                    title={`Download Facebook video in ${highestLabel}`}
+                    onClick={() => executeDownload(highQualityFormat, 'best')}
                     disabled={activeDownloadingTarget !== null}
                     className="w-full py-3.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-blue-600 hover:bg-blue-700 shadow-md shadow-blue-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 active:scale-98"
                   >
-                    {activeDownloadingTarget === '720' ? (
+                    {activeDownloadingTarget === 'best' ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin text-white" />
-                        <span>Preparing 720p...</span>
+                        <span>Preparing {highestLabel}...</span>
                       </>
                     ) : (
                       <>
                         <Video className="w-4 h-4 text-white" />
-                        <span>Download Video (720p HD)</span>
+                        <span>Download Video ({highestLabel})</span>
                       </>
                     )}
                   </button>
 
-                  {/* Button 2: 480p */}
+                  {/* Button 2: Standard Quality (480p SD or alternative) */}
                   <button
                     type="button"
-                    title="Download Facebook video in 480p"
+                    title={`Download Facebook video in ${standardLabel}`}
                     onClick={() => executeDownload(standardQualityFormat, '480')}
                     disabled={activeDownloadingTarget !== null}
                     className="w-full py-3.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-blue-600 hover:bg-blue-700 shadow-md shadow-blue-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 active:scale-98"
@@ -415,12 +419,12 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
                     {activeDownloadingTarget === '480' ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin text-white" />
-                        <span>Preparing 480p...</span>
+                        <span>Preparing {standardLabel}...</span>
                       </>
                     ) : (
                       <>
                         <Video className="w-4 h-4 text-white" />
-                        <span>Download Video (480p)</span>
+                        <span>Download Video ({standardLabel})</span>
                       </>
                     )}
                   </button>

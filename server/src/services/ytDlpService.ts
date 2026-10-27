@@ -359,19 +359,27 @@ export class YtDlpService {
     const outputTemplate = path.join(outputDir, `${uniqueId}.%(ext)s`);
     const binary = this.getBinaryPath();
 
-    // Determine target height: 480p (Standard) or 720p (High)
-    let targetHeight = 720;
-    const fLower = formatId.toLowerCase();
+    // Determine format selection without artificial caps:
+    // If standard/480p is specifically requested, restrict to height<=480.
+    // If a specific target resolution is requested (e.g. 1080p, 1440p, 2160p), target that height.
+    // Otherwise, default to the highest available quality (bestvideo*+bestaudio/bestvideo+bestaudio/best)
+    // with FFmpeg merging and seamless fallback to the best combined stream.
+    const fLower = (formatId || '').toLowerCase();
+    let formatSelector: string;
 
     if (fLower.includes('480') || fLower.includes('sd') || fLower === 'standard' || fLower.includes('standard_quality')) {
-      targetHeight = 480;
+      formatSelector = 'bestvideo[height<=480]+bestaudio/best[height<=480]/bestvideo+bestaudio/best';
     } else {
-      targetHeight = 720;
+      const explicitHeightMatch = fLower.match(/(\d{3,4})p?/);
+      const parsedHeight = explicitHeightMatch ? parseInt(explicitHeightMatch[1], 10) : 0;
+      if (parsedHeight >= 144 && parsedHeight !== 720) {
+        formatSelector = `bestvideo[height<=${parsedHeight}]+bestaudio/best[height<=${parsedHeight}]/bestvideo+bestaudio/best`;
+      } else {
+        // Automatic best quality without artificial caps:
+        // Prefers best video + best audio stream merged to MP4, falling back to best combined stream
+        formatSelector = 'bestvideo*+bestaudio/bestvideo+bestaudio/best';
+      }
     }
-
-    // Format selection prioritizing video with matching resolution + best audio stream
-    // e.g. bestvideo[height<=1080]+bestaudio/best[height<=1080]/best
-    const formatSelector = `bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`;
 
     const args = [
       '-f',

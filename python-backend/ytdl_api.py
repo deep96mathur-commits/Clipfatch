@@ -97,8 +97,14 @@ def _base_opts() -> dict:
 
 
 def _detect_platform(url: str) -> tuple[str, str]:
-    lower_url = url.lower()
-    if "instagram.com" in lower_url or "instagr.am" in lower_url:
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+    except Exception:
+        hostname = ""
+
+    instagram_hosts = ("instagram.com", "instagr.am")
+    if any(hostname == h or hostname.endswith("." + h) for h in instagram_hosts):
         return "instagram", "Instagram"
     return "youtube", "YouTube"
 

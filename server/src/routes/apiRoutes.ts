@@ -79,10 +79,8 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
  */
 async function handleAnalyze(rawUrl: string) {
   const videoData = await processVideoInfo(rawUrl);
-
   const videoFormats = videoData.formats
-    .filter((f) => !f.isAudio && f.mediaType !== 'audio')
-    .filter((f) => f.height === 480 || f.height === 720);
+    .filter((f) => !f.isAudio && f.mediaType !== 'audio');
 
   const qualitySelection = selectStandardAndHighFormats(videoFormats);
   const standardQuality = videoData.standardQuality || qualitySelection.standard;
@@ -122,7 +120,7 @@ async function handleAnalyze(rawUrl: string) {
       has_audio: f.hasAudio ?? true,
       has_video: f.hasVideo ?? true,
       height: f.height,
-      is_hd: f.height === 720,
+      is_hd: (f.height || 0) >= 720,
       filesize: f.filesize,
       filesizeFormatted: f.filesizeFormatted,
       url: f.url,
@@ -440,12 +438,14 @@ apiRouter.get('/download', async (req: Request, res: Response, next: NextFunctio
       return;
     }
 
-    // Video download: only two formats: 480p (Standard) and 720p (High)
-    let formatId = '720p';
+    // Video download: default to highest available quality ("best"), respecting source limits without artificial caps
+    let formatId = 'best';
     if (quality === 'standard' || quality === 'sd' || quality === '480') {
       formatId = '480p';
+    } else if (quality && quality !== 'high' && quality !== 'best') {
+      formatId = quality;
     } else {
-      formatId = '720p';
+      formatId = 'best';
     }
     await streamMediaToClient(rawUrl, res, title, rawUrl, formatId, 'video');
   } catch (err) {

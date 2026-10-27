@@ -137,36 +137,9 @@ export function deduplicateAndSortVideoFormats(formats: VideoFormat[]): VideoFor
     }
   }
 
-  // Filter to only allow 480p and 720p video formats
-  const allowed = Array.from(heightGroups.values()).filter(
-    (f) => f.height === 480 || f.height === 720
-  );
-
-  // If neither 480 nor 720 existed directly, map closest to 480 and 720
-  if (allowed.length === 0 && heightGroups.size > 0) {
-    const all = Array.from(heightGroups.values());
-    const closest480 = [...all].sort((a, b) => Math.abs((a.height || 480) - 480) - Math.abs((b.height || 480) - 480))[0];
-    allowed.push({
-      ...closest480,
-      id: 'fb-480p',
-      height: 480,
-      quality: '480p (SD)',
-      resolution: '854x480',
-      isHd: false,
-    });
-    const highest = [...all].sort((a, b) => (b.height || 0) - (a.height || 0))[0];
-    allowed.push({
-      ...highest,
-      id: 'fb-720p',
-      height: 720,
-      quality: '720p (HD)',
-      resolution: '1280x720',
-      isHd: true,
-    });
-  }
-
-  // Sort by height ASCENDING: 480p first, then 720p
-  const sorted = allowed.sort((a, b) => (a.height || 0) - (b.height || 0));
+  // Return all available deduplicated resolutions sorted in ASCENDING order (lowest to highest)
+  const allFormats = Array.from(heightGroups.values());
+  const sorted = allFormats.sort((a, b) => (a.height || 0) - (b.height || 0));
   return sorted;
 }
 
@@ -208,9 +181,9 @@ export interface QualitySelectionResult {
 }
 
 /**
- * Selects exactly two formats:
- * - Standard Quality: 480p (SD)
- * - High Quality: 720p (HD)
+ * Selects standard quality and highest available quality:
+ * - High Quality: The highest resolution available from the source (no artificial 720p cap)
+ * - Standard Quality: 480p (or lowest available resolution as fallback)
  */
 export function selectStandardAndHighFormats(formats: VideoFormat[]): QualitySelectionResult {
   const videoFormats = formats.filter((f) => !f.isAudio && f.mediaType !== 'audio');
@@ -218,17 +191,13 @@ export function selectStandardAndHighFormats(formats: VideoFormat[]): QualitySel
     return { standard: null, high: null };
   }
 
-  // High Quality: 720p
-  const high =
-    videoFormats.find((f) => f.height === 720) ||
-    videoFormats.find((f) => f.id.includes('720')) ||
-    videoFormats[videoFormats.length - 1];
+  // Sorted ascending: last element is the highest available quality
+  const sortedByHeight = [...videoFormats].sort((a, b) => (a.height || 0) - (b.height || 0));
+  const high = sortedByHeight[sortedByHeight.length - 1];
 
-  // Standard Quality: 480p
-  const standard =
-    videoFormats.find((f) => f.height === 480) ||
-    videoFormats.find((f) => f.id.includes('480')) ||
-    videoFormats[0];
+  // Standard Quality: 480p, or the closest format <= 480p, or lowest available
+  const standard480 = sortedByHeight.find((f) => f.height === 480);
+  const standard = standard480 || (sortedByHeight.length > 1 ? sortedByHeight[0] : high);
 
   return { standard, high };
 }

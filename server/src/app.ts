@@ -22,7 +22,12 @@ export function createServerApp() {
           imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
           mediaSrc: ["'self'", 'blob:', 'https:', 'http:'],
           connectSrc: ["'self'", 'https:', 'http:', 'ws:', 'wss:'],
-          frameAncestors: ["'self'", 'https:', 'http:'], // Allow embedding in AI Studio preview frame
+          frameAncestors: [
+            "'self'",
+            'https://*.google.com',
+            'https://*.aistudio.google.com',
+            'https://*.run.app',
+          ], // Restrict frame ancestors to self and trusted preview origins to protect against clickjacking
         },
       },
       crossOriginResourcePolicy: { policy: 'cross-origin' },

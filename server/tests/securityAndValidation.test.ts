@@ -11,7 +11,9 @@ import {
 import { createServerApp } from '../src/app.js';
 import type { Server } from 'http';
 import { adapterRegistry } from '../src/services/adapters/AdapterRegistry.js';
-import { deduplicateAndSortVideoFormats, generateAudioFormats } from '../src/utils/formatNormalizer.js';
+import { FacebookAdapter } from '../src/services/adapters/FacebookAdapter.js';
+import { deduplicateAndSortVideoFormats, generateAudioFormats, selectStandardAndHighFormats } from '../src/utils/formatNormalizer.js';
+import { VideoFormat } from '../src/types/index.js';
 import { probeMediaFile } from '../src/utils/mediaProbe.js';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
@@ -198,7 +200,7 @@ describe('yt-dlp Engine & Media Whitelist', () => {
 });
 
 describe('Format Normalizer: Deduplication & Ascending Sort', () => {
-  it('eliminates duplicate video resolutions and strictly provides 480p and 720p', () => {
+  it('eliminates duplicate video resolutions and sorts all available formats ascending without artificial cap', () => {
     const rawFormats = [
       { id: 'fmt-1080p', format: 'MP4', quality: '1080p', resolution: '1920x1080', height: 1080, url: 'https://cdn.example.com/1080', hasAudio: true, hasVideo: true },
       { id: 'fmt-720p-dup1', format: 'MP4', quality: '720p (HD)', resolution: '1280x720', height: 720, url: 'https://cdn.example.com/720a', hasAudio: true, hasVideo: true },
@@ -209,12 +211,10 @@ describe('Format Normalizer: Deduplication & Ascending Sort', () => {
     ];
 
     const normalized = deduplicateAndSortVideoFormats(rawFormats as any);
-
-    // Strictly 480p and 720p
-    expect(normalized).toHaveLength(2);
-    expect(normalized[0].height).toBe(480);
-    expect(normalized[1].height).toBe(720);
-    expect(normalized[1].url).toBe('https://cdn.example.com/720a');
+    // Preserves all available heights without artificial caps: 360p, 480p, 720p, 1080p
+    expect(normalized).toHaveLength(4);
+    expect(normalized.map((f) => f.height)).toEqual([360, 480, 720, 1080]);
+    expect(normalized.find((f) => f.height === 720)?.url).toBe('https://cdn.example.com/720a');
   });
 
   it('generates standard 128 kbps MP3 audio download option', () => {
@@ -750,6 +750,12 @@ describe('HTTP Endpoint Query Tampering Regression Tests', () => {
 
       const lookalike = await validateAndClassifyUrl('https://facebook.com.malicious.org/video');
       expect(lookalike.safe).toBe(false);
+
+      const lookalikeAttacker1 = await validateAndClassifyUrl('https://facebook-attacker.com/video');
+      expect(lookalikeAttacker1.safe).toBe(false);
+
+      const lookalikeAttacker2 = await validateAndClassifyUrl('https://attacker-facebook.com/video');
+      expect(lookalikeAttacker2.safe).toBe(false);
     });
 
     it('does not leak internal error objects or stack traces on errors', async () => {
@@ -764,6 +770,125 @@ describe('HTTP Endpoint Query Tampering Regression Tests', () => {
         expect(json.error.message).not.toContain('/app/applet');
         expect(json.error.message).not.toContain('node:internal');
       }
+    });
+
+    it('Helmet CSP restricts frame-ancestors to self and trusted origins without broad http/https', async () => {
+      const res = await fetch(`${baseUrl}/api/check`);
+      const csp = res.headers.get('content-security-policy') || '';
+      const frameDirective =
+        csp
+          .split(';')
+          .map((d) => d.trim())
+          .find((d) => d.startsWith('frame-ancestors')) || '';
+      expect(frameDirective).toContain("'self'");
+      expect(frameDirective).not.toMatch(/\bhttps:\b/);
+      expect(frameDirective).not.toMatch(/\bhttp:\b/);
+    });
+  });
+
+  describe('Automatic Highest Quality Selection', () => {
+    it('selects the highest available resolution without capping at 720p', () => {
+      const formats: VideoFormat[] = [
+        { id: '1', format: 'MP4', quality: '360p', resolution: '640x360', height: 360, url: 'https://fbcdn.net/360.mp4' },
+        { id: '2', format: 'MP4', quality: '720p (HD)', resolution: '1280x720', height: 720, url: 'https://fbcdn.net/720.mp4' },
+        { id: '3', format: 'MP4', quality: '1080p (Full HD)', resolution: '1920x1080', height: 1080, url: 'https://fbcdn.net/1080.mp4' },
+        { id: '4', format: 'MP4', quality: '1440p (2K)', resolution: '2560x1440', height: 1440, url: 'https://fbcdn.net/1440.mp4' },
+      ];
+      const res = selectStandardAndHighFormats(formats);
+      expect(res.high?.height).toBe(1440);
+      expect(res.high?.quality).toBe('1440p (2K)');
+      expect(res.standard?.height).toBe(360);
+    });
+
+    it('preserves all available deduplicated resolutions in deduplicateAndSortVideoFormats', () => {
+      const formats: VideoFormat[] = [
+        { id: '1', format: 'MP4', quality: '360p', resolution: '640x360', height: 360, url: 'https://fbcdn.net/360.mp4' },
+        { id: '2', format: 'MP4', quality: '480p', resolution: '854x480', height: 480, url: 'https://fbcdn.net/480.mp4' },
+        { id: '3', format: 'MP4', quality: '720p', resolution: '1280x720', height: 720, url: 'https://fbcdn.net/720.mp4' },
+        { id: '4', format: 'MP4', quality: '1080p', resolution: '1920x1080', height: 1080, url: 'https://fbcdn.net/1080.mp4' },
+        { id: '5', format: 'MP4', quality: '2160p', resolution: '3840x2160', height: 2160, url: 'https://fbcdn.net/2160.mp4' },
+      ];
+      const result = deduplicateAndSortVideoFormats(formats);
+      expect(result.length).toBe(5);
+      expect(result.map((f) => f.height)).toEqual([360, 480, 720, 1080, 2160]);
+    });
+  });
+
+  describe('Malicious Hostname Lookalikes & Exact Domain Allowlisting (CodeQL Regression)', () => {
+    it('strictly rejects lookalike and spoofed domain URLs in SSRF guard', async () => {
+      const maliciousUrls = [
+        'https://facebook.com.attacker.com/watch?v=123',
+        'https://evil-facebook.com/watch?v=123',
+        'https://facebook-phishing.com/video/456',
+        'https://notfacebook.com/reel/789',
+        'https://fb.watch.evil.org/abc',
+        'https://evilfb.watch/xyz',
+        'https://attacker-fb.gg/clip',
+      ];
+
+      for (const u of maliciousUrls) {
+        const res = await validateAndClassifyUrl(u);
+        expect(res.safe).toBe(false);
+        expect(res.platform).toBe('unknown');
+      }
+    });
+
+    it('strictly matches allowed domain boundaries for frontend and adapter validation', () => {
+      const allowedDomains = ['facebook.com', 'fb.watch', 'fb.gg'];
+      const checkHost = (hostname: string) => {
+        const h = hostname.toLowerCase();
+        return allowedDomains.some((d) => h === d || h.endsWith('.' + d));
+      };
+
+      // Valid domains
+      expect(checkHost('facebook.com')).toBe(true);
+      expect(checkHost('www.facebook.com')).toBe(true);
+      expect(checkHost('m.facebook.com')).toBe(true);
+      expect(checkHost('web.facebook.com')).toBe(true);
+      expect(checkHost('fb.watch')).toBe(true);
+      expect(checkHost('fb.gg')).toBe(true);
+
+      // Malicious lookalikes must fail
+      expect(checkHost('evil-facebook.com')).toBe(false);
+      expect(checkHost('facebook.com.attacker.com')).toBe(false);
+      expect(checkHost('notfacebook.com')).toBe(false);
+      expect(checkHost('myfb.watch')).toBe(false);
+      expect(checkHost('fb.watch.evil.com')).toBe(false);
+      expect(checkHost('fakefb.gg')).toBe(false);
+    });
+  });
+
+  describe('Single-Pass Entity Decoding & Double Unescaping Prevention (CodeQL Regression)', () => {
+    const adapter = new FacebookAdapter();
+
+    it('prevents double-unescaping when input contains &amp;lt;', () => {
+      // If &amp; is unescaped in a separate first pass, &amp;lt; turns into &lt;, which becomes <.
+      // With single-pass dictionary replacement, &amp;lt; must remain &lt; and NOT turn into <.
+      const maliciousInput = '&amp;lt;script&gt;alert(1)&amp;lt;/script&gt;';
+      const cleaned = adapter.cleanString(maliciousInput);
+      expect(cleaned).toBe('&lt;script>alert(1)&lt;/script>');
+      expect(cleaned).not.toContain('<script');
+    });
+
+    it('safely unescapes legitimate HTML entities in titles and descriptions', () => {
+      const titleWithEntities = '&quot;ClipFetch Demo&quot; &amp; &#39;Special&#39; &#x2F; &lt;Trailer&gt;';
+      const cleaned = adapter.cleanString(titleWithEntities);
+      expect(cleaned).toBe('"ClipFetch Demo" & \'Special\' / <Trailer>');
+    });
+
+    it('handles nested ampersands without recursive replacement', () => {
+      const doubleAmp = '&amp;amp;';
+      const cleaned = adapter.cleanString(doubleAmp);
+      expect(cleaned).toBe('&amp;');
+    });
+
+    it('gracefully handles empty, falsy, or malformed input', () => {
+      expect(adapter.cleanString('')).toBe('');
+      // @ts-expect-error test runtime boundary
+      expect(adapter.cleanString(null)).toBe('');
+      // @ts-expect-error test runtime boundary
+      expect(adapter.cleanString(undefined)).toBe('');
+      expect(adapter.cleanString('Simple Normal Title')).toBe('Simple Normal Title');
     });
   });
 });

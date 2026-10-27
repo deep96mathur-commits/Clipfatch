@@ -284,14 +284,20 @@ export class FacebookAdapter implements PlatformAdapter {
     return (mediaData as VideoFormat[]) || [];
   }
 
-  private cleanString(str: string): string {
+  cleanString(str: string): string {
+    if (!str || typeof str !== 'string') return '';
+    const entityMap: Record<string, string> = {
+      '&amp;': '&',
+      '&lt;': '<',
+      '&gt;': '>',
+      '&quot;': '"',
+      '&#39;': "'",
+      '&#x2f;': '/',
+      '&#x2F;': '/',
+      '&apos;': "'",
+    };
     return str
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&#x2F;/g, '/')
+      .replace(/&(amp|lt|gt|quot|#39|#x2f|apos);/gi, (match) => entityMap[match.toLowerCase()] ?? match)
       .trim();
   }
 
