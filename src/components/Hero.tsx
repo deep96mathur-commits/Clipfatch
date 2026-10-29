@@ -227,7 +227,7 @@ export const Hero = forwardRef<HeroHandle, HeroProps>(({
                 {isLoading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Fetching...</span>
+                    <span>Fetching video information...</span>
                   </>
                 ) : (
                   <>

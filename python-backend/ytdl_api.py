@@ -113,9 +113,15 @@ def _format_selector(kind: str, quality: str) -> str:
     if kind == "audio":
         return "bestaudio/best"
 
-    h = "" if quality == "best" else f"[height<={quality}]"
+    if quality in ("standard", "sd", "480"):
+        h = "[height<=480]"
+    elif quality in ("best", "high", "720", "1080"):
+        h = "[height<=720]"
+    else:
+        h = f"[height<={quality}]"
+
     if HAS_FFMPEG:
-        # Handles separate video+audio streams, plus single pre-muxed streams (standard on Instagram)
+        # Handles separate video+audio streams, plus single pre-muxed streams
         return f"bestvideo{h}+bestaudio/best{h}/best"
 
     # Without ffmpeg we can only take a single pre-muxed file
@@ -215,7 +221,7 @@ def download(
     background: BackgroundTasks,
     url: str = Query(..., description="YouTube or Instagram video URL"),
     type: str = Query("video", pattern="^(video|audio)$"),
-    quality: str = Query("best", pattern="^(best|2160|1440|1080|720|480|360|240|144)$"),
+    quality: str = Query("high", pattern="^(best|high|standard|2160|1440|1080|720|480|360|240|144)$"),
 ):
     _validate_url(url)
     platform, platform_label = _detect_platform(url)
@@ -284,11 +290,48 @@ def download(
         shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(500, "Download failed. Please try again.")
 
-    files = [p for p in tmp.iterdir() if p.is_file()]
+    files = [p for p in tmp.iterdir() if p.is_file() and not p.name.endswith(".part") and not p.name.endswith(".ytdl")]
     if not files:
         shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(500, "Download produced no output file")
     out = max(files, key=lambda p: p.stat().st_size)
+
+    # Validate streams if video
+    if type == "video" and HAS_FFMPEG:
+        try:
+            import json
+            import subprocess
+            probe_cmd = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "stream=codec_type",
+                "-of", "json", str(out)
+            ]
+            probe_res = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+            if probe_res.returncode == 0:
+                pdata = json.loads(probe_res.stdout)
+                streams_list = pdata.get("streams", [])
+                has_video = any(s.get("codec_type") == "video" for s in streams_list)
+                has_audio = any(s.get("codec_type") == "audio" for s in streams_list)
+
+                if has_video and not has_audio:
+                    # Look for separate audio file downloaded by yt-dlp in tmp
+                    audio_files = [f for f in files if f != out and ("audio" in f.name or f.suffix in (".m4a", ".webm", ".opus", ".mp3"))]
+                    if audio_files:
+                        merged_path = tmp / "merged_output.mp4"
+                        subprocess.run([
+                            "ffmpeg", "-y", "-i", str(out), "-i", str(audio_files[0]),
+                            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                            "-movflags", "+faststart", str(merged_path)
+                        ], check=True, capture_output=True, timeout=60)
+                        if merged_path.exists() and merged_path.stat().st_size > 0:
+                            out = merged_path
+                    else:
+                        shutil.rmtree(tmp, ignore_errors=True)
+                        raise HTTPException(502, "Video download lacks audio stream and could not be merged.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
     raw_title = data.get("title") or data.get("description") or data.get("id") or f"{platform_label}_media"
     cleaned_title = raw_title.split("\n")[0].strip()

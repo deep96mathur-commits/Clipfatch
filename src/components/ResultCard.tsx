@@ -29,13 +29,18 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
 
   const fallbackUrl = rawVideoFormats[0]?.url || video.originalUrl;
 
-  // Best/Highest available quality format from source (no artificial 720p cap)
-  const highestVideo = video.highQuality || sortedVideos[sortedVideos.length - 1];
+  // High Quality: Highest available quality capped at 720p (video must come only 720p)
+  const highestVideo =
+    video.highQuality ||
+    [...sortedVideos].reverse().find((f) => (f.height || 0) <= 720) ||
+    sortedVideos.find((f) => (f.height || 0) <= 720) ||
+    sortedVideos[0];
+
   const highQualityFormat: VideoFormat = highestVideo || {
-    id: 'fb-best',
+    id: 'fb-720p',
     format: 'MP4',
-    quality: 'Highest Quality',
-    resolution: 'Best Available',
+    quality: 'High Quality',
+    resolution: '720p',
     height: 720,
     url: fallbackUrl,
     hasAudio: true,
@@ -44,17 +49,18 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
     mediaType: 'video',
   };
 
-  // Standard quality format (480p SD or lowest available)
+  // Standard Quality: lower-resolution video around 480p
   const standardVideo =
     video.standardQuality ||
     sortedVideos.find((f) => f.height === 480) ||
+    [...sortedVideos].reverse().find((f) => (f.height || 0) <= 480) ||
     (sortedVideos.length > 1 ? sortedVideos[0] : null);
 
   const standardQualityFormat: VideoFormat = standardVideo || {
-    id: 'fb-480p',
+    id: 'fb-standard',
     format: 'MP4',
-    quality: '480p (SD)',
-    resolution: '854x480',
+    quality: 'Standard Quality',
+    resolution: '480p',
     height: 480,
     url: fallbackUrl,
     hasAudio: true,
@@ -63,8 +69,8 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
     mediaType: 'video',
   };
 
-  const highestLabel = highQualityFormat.quality || (highQualityFormat.height ? `${highQualityFormat.height}p` : 'Highest Quality');
-  const standardLabel = standardQualityFormat.quality || (standardQualityFormat.height ? `${standardQualityFormat.height}p` : '480p (SD)');
+  const highestLabel = 'High Quality';
+  const standardLabel = 'Standard Quality';
 
   // STRICT REQUIREMENT: Only audio format is 128kbps
   const raw128Audio = video.formats.find(
@@ -86,6 +92,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloadErrorDebug, setDownloadErrorDebug] = useState<string | null>(null);
   const [activeDownloadUrl, setActiveDownloadUrl] = useState<string | null>(null);
+  const [downloadStage, setDownloadStage] = useState<string | null>(null);
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
   const [mp3ExtendedWait, setMp3ExtendedWait] = useState(false);
   const mp3TimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -108,7 +115,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
     return null;
   };
 
-  const executeDownload = async (targetFormat: VideoFormat, targetKey: 'best' | '480' | '128' | string) => {
+  const executeDownload = async (targetFormat: VideoFormat, targetKey: 'high' | 'standard' | 'best' | '480' | '128' | string) => {
     setActiveDownloadingTarget(targetKey);
     setDownloadError(null);
     setDownloadErrorDebug(null);
@@ -165,11 +172,14 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
         return;
       }
 
+      setDownloadStage('Preparing video');
+
       // 1. Prepare download ticket/endpoint from the backend
+      const isStandard = targetKey === 'standard' || targetKey === '480';
       const result = await triggerDownload({
         url: video.originalUrl,
-        formatId: targetKey === '480' ? (standardQualityFormat.id || 'fb-480p') : (highQualityFormat.id || 'best'),
-        quality: targetKey === '480' ? 'standard' : 'best',
+        formatId: isStandard ? (standardQualityFormat.id || 'standard') : (highQualityFormat.id || 'high'),
+        quality: isStandard ? 'standard' : 'high',
         targetMediaUrl: targetFormat.url,
         title: video.title
           ? video.title.length > 190
@@ -189,6 +199,35 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
           : `/${result.downloadUrl}`;
 
       setActiveDownloadUrl(relativeUrl);
+
+      // Poll real progress stages if ticket ID is present
+      if (result.download_id) {
+        let isReady = false;
+        const pollStart = Date.now();
+        const pollMaxTimeMs = 90000;
+
+        while (!isReady && Date.now() - pollStart < pollMaxTimeMs) {
+          try {
+            const progRes = await fetch(`/api/download-progress/${result.download_id}`);
+            if (progRes.ok) {
+              const progData = await progRes.json();
+              if (progData.stageLabel) {
+                setDownloadStage(progData.stageLabel);
+              }
+              if (progData.stage === 'error') {
+                isReady = true;
+                break;
+              }
+              if (progData.ready || progData.stage === 'ready' || progData.stage === 'complete') {
+                isReady = true;
+                setDownloadStage('Download complete');
+                break;
+              }
+            }
+          } catch {}
+          await new Promise((r) => setTimeout(r, 450));
+        }
+      }
 
       // 2. Pre-check with a lightweight HEAD request on the same origin
       // Only show "Download blocked" when the response is text/html or not 200
@@ -233,7 +272,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
         );
       }
 
-      // 3. Start download with a plain link / top-level navigation to /api/download
+      // 3. Start download with a plain link / top-level navigation to /api/download-file/:ticketId
       // on the same origin as the page (NOT fetch + blob), so browser attaches first-party cookies natively
       const link = document.createElement('a');
       link.href = relativeUrl;
@@ -243,12 +282,14 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
       link.click();
       document.body.removeChild(link);
 
+      setDownloadStage('Download complete');
       setDownloadSuccess(
         `Download started for ${result.filename}! If it does not start automatically, click the direct link below.`
       );
       setTimeout(() => setDownloadSuccess(null), 8000);
     } catch (err: unknown) {
       setDownloadError((err as Error).message || 'Failed to download file.');
+      setDownloadStage(null);
     } finally {
       if (mp3TimerRef.current) {
         clearTimeout(mp3TimerRef.current);
@@ -256,6 +297,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
       }
       setMp3ExtendedWait(false);
       setActiveDownloadingTarget(null);
+      setDownloadStage(null);
     }
   };
 
@@ -384,47 +426,47 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
                 </div>
               </div>
 
-              {/* Dedicated Download Buttons (Highest Quality, Standard 480p, MP3 High Quality) */}
+              {/* Dedicated Download Buttons */}
               {video.downloadAvailable ? (
                 <div className="flex flex-col gap-3 mb-6">
-                  {/* Button 1: Highest Available Quality */}
+                  {/* Button 1: High Quality */}
                   <button
                     type="button"
-                    title={`Download Facebook video in ${highestLabel}`}
-                    onClick={() => executeDownload(highQualityFormat, 'best')}
+                    title="High Quality"
+                    onClick={() => executeDownload(highQualityFormat, 'high')}
                     disabled={activeDownloadingTarget !== null}
                     className="w-full py-3.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-blue-600 hover:bg-blue-700 shadow-md shadow-blue-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 active:scale-98"
                   >
-                    {activeDownloadingTarget === 'best' ? (
+                    {activeDownloadingTarget === 'high' || activeDownloadingTarget === 'best' ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin text-white" />
-                        <span>Preparing {highestLabel}...</span>
+                        <span>{downloadStage || 'Preparing video'}</span>
                       </>
                     ) : (
                       <>
                         <Video className="w-4 h-4 text-white" />
-                        <span>Download Video ({highestLabel})</span>
+                        <span>High Quality</span>
                       </>
                     )}
                   </button>
 
-                  {/* Button 2: Standard Quality (480p SD or alternative) */}
+                  {/* Button 2: Standard Quality */}
                   <button
                     type="button"
-                    title={`Download Facebook video in ${standardLabel}`}
-                    onClick={() => executeDownload(standardQualityFormat, '480')}
+                    title="Standard Quality"
+                    onClick={() => executeDownload(standardQualityFormat, 'standard')}
                     disabled={activeDownloadingTarget !== null}
                     className="w-full py-3.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-blue-600 hover:bg-blue-700 shadow-md shadow-blue-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 active:scale-98"
                   >
-                    {activeDownloadingTarget === '480' ? (
+                    {activeDownloadingTarget === 'standard' || activeDownloadingTarget === '480' ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin text-white" />
-                        <span>Preparing {standardLabel}...</span>
+                        <span>{downloadStage || 'Preparing video'}</span>
                       </>
                     ) : (
                       <>
                         <Video className="w-4 h-4 text-white" />
-                        <span>Download Video ({standardLabel})</span>
+                        <span>Standard Quality</span>
                       </>
                     )}
                   </button>
@@ -440,7 +482,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
                     {activeDownloadingTarget === '128' ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin text-white" />
-                        <span>Converting MP3...</span>
+                        <span>{downloadStage || 'Preparing video'}</span>
                       </>
                     ) : (
                       <>
@@ -450,14 +492,12 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
                     )}
                   </button>
 
-                  {/* Wait note: while any download is in progress */}
+                  {/* Real progress stage note: while any download is in progress */}
                   {activeDownloadingTarget !== null && (
-                    <div className="mt-1 p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 flex items-start sm:items-center gap-3 text-xs sm:text-sm font-medium text-amber-800 dark:text-amber-200 shadow-xs wait-note-animated">
-                      <Loader2 className="w-4 h-4 animate-spin text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+                    <div className="mt-1 p-3.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 flex items-start sm:items-center gap-3 text-xs sm:text-sm font-medium text-blue-900 dark:text-blue-200 shadow-xs wait-note-animated">
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400 shrink-0 mt-0.5 sm:mt-0" />
                       <span>
-                        {activeDownloadingTarget === '128' && mp3ExtendedWait
-                          ? 'Still working... converting audio takes a little longer. Thank you for your patience!'
-                          : '⏳ Please wait! Your file is being prepared. This can take 30 seconds to 2 minutes depending on the video length. Do not close or refresh this page.'}
+                        Stage: <strong className="font-semibold">{downloadStage || 'Preparing video'}</strong>. Merging full audio and video streams with FFmpeg.
                       </span>
                     </div>
                   )}
@@ -482,9 +522,24 @@ export const ResultCard: React.FC<ResultCardProps> = ({ video, onReset }) => {
             {/* Feedback Toasts & Direct Tab Fallback */}
             <div>
               {downloadSuccess && (
-                <div className="flex items-center gap-2 mt-3 text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-950/30 p-3 rounded-xl border border-emerald-200 dark:border-emerald-900/40">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  <span>{downloadSuccess}</span>
+                <div className="flex flex-col gap-2 mt-3 p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 text-xs text-emerald-700 dark:text-emerald-300">
+                  <div className="flex items-center gap-2 font-medium">
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span>{downloadSuccess}</span>
+                  </div>
+                  {activeDownloadUrl && (
+                    <div className="pt-2 border-t border-emerald-200/60 dark:border-emerald-800/40 flex items-center justify-between">
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400">If download did not start automatically:</span>
+                      <a
+                        href={activeDownloadUrl}
+                        download="ClipFetch_video.mp4"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-xs"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Save Video File</span>
+                      </a>
+                    </div>
+                  )}
                 </div>
               )}
 

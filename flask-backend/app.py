@@ -567,9 +567,18 @@ def download():
                         "-movflags", "+faststart",
                         final_output_path
                     ]
-                    subprocess.run(merge_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+                    try:
+                        subprocess.run(merge_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+                    except Exception:
+                        return jsonify({
+                            "success": False,
+                            "error": {"code": "AUDIO_MERGE_FAILED", "message": "Failed to merge video and audio streams into playable media."}
+                        }), 502
                 else:
-                    os.rename(video_temp, final_output_path)
+                    return jsonify({
+                        "success": False,
+                        "error": {"code": "AUDIO_MERGE_FAILED", "message": "Separate audio stream or FFmpeg is unavailable to assemble complete video with sound."}
+                    }), 502
 
             mimetype = "video/mp4"
 

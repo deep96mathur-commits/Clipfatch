@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { VideoFormat } from '../types/index.js';
 import { deduplicateAndSortVideoFormats } from '../utils/formatNormalizer.js';
-import { probeMediaFile, MediaProbeResult } from '../utils/mediaProbe.js';
+import { probeMediaFile, MediaProbeResult, getFfmpegBinary } from '../utils/mediaProbe.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -217,6 +217,9 @@ export class YtDlpService {
         '--no-warnings',
         '--skip-download',
         '--no-check-certificates',
+        '--no-check-formats',
+        '--socket-timeout',
+        '10',
         '--format-sort',
         'res,ext:mp4:m4a',
         ...this.getCommonArgs(),
@@ -342,14 +345,23 @@ export class YtDlpService {
   }
 
   /**
+   * Discovers the best available ffmpeg binary path.
+   */
+  public static getFfmpegPath(): string {
+    return getFfmpegBinary();
+  }
+
+  /**
    * Downloads and merges video and audio streams using yt-dlp and FFmpeg.
    * Guarantees that the resulting MP4 contains both video and audio streams,
-   * verified using ffprobe.
+   * verified using ffprobe. Never returns intermediate video-only or audio-only files.
    */
   public static async downloadToLocalFile(
     url: string,
     formatId: string,
-    outputDir = '/tmp/clipfetch'
+    outputDir = '/tmp/clipfetch',
+    requireAudio = true,
+    onStageChange?: (stage: 'preparing' | 'downloading' | 'finalizing') => void
   ): Promise<{ filePath: string; probe: MediaProbeResult; cleanup: () => void } | null> {
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
@@ -358,12 +370,11 @@ export class YtDlpService {
     const uniqueId = `clip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const outputTemplate = path.join(outputDir, `${uniqueId}.%(ext)s`);
     const binary = this.getBinaryPath();
+    const ffmpegBin = this.getFfmpegPath();
 
-    // Determine format selection without artificial caps:
-    // If standard/480p is specifically requested, restrict to height<=480.
-    // If a specific target resolution is requested (e.g. 1080p, 1440p, 2160p), target that height.
-    // Otherwise, default to the highest available quality (bestvideo*+bestaudio/bestvideo+bestaudio/best)
-    // with FFmpeg merging and seamless fallback to the best combined stream.
+    // Quality selection behavior:
+    // Standard Quality: lower-resolution, bandwidth-friendly video with audio, preferably around 480p.
+    // High Quality (Default): Video must come only 720p (capped strictly at 720p, no upscaling).
     const fLower = (formatId || '').toLowerCase();
     let formatSelector: string;
 
@@ -372,12 +383,11 @@ export class YtDlpService {
     } else {
       const explicitHeightMatch = fLower.match(/(\d{3,4})p?/);
       const parsedHeight = explicitHeightMatch ? parseInt(explicitHeightMatch[1], 10) : 0;
-      if (parsedHeight >= 144 && parsedHeight !== 720) {
+      if (parsedHeight >= 144 && parsedHeight < 720) {
         formatSelector = `bestvideo[height<=${parsedHeight}]+bestaudio/best[height<=${parsedHeight}]/bestvideo+bestaudio/best`;
       } else {
-        // Automatic best quality without artificial caps:
-        // Prefers best video + best audio stream merged to MP4, falling back to best combined stream
-        formatSelector = 'bestvideo*+bestaudio/bestvideo+bestaudio/best';
+        // High Quality default: Highest available quality capped at 720p (must come only 720p, no upscaling)
+        formatSelector = 'bestvideo[height<=720]+bestaudio/best[height<=720]/bestvideo+bestaudio/best';
       }
     }
 
@@ -387,10 +397,14 @@ export class YtDlpService {
       '--merge-output-format',
       'mp4',
       '--ffmpeg-location',
-      '/usr/bin/ffmpeg',
+      ffmpegBin,
       '--no-playlist',
       '--no-warnings',
       '--no-check-certificates',
+      '--socket-timeout',
+      '15',
+      '--concurrent-fragments',
+      '5',
       ...this.getCommonArgs(),
       '-o',
       outputTemplate,
@@ -405,10 +419,40 @@ export class YtDlpService {
           if (fs.existsSync(f)) fs.unlinkSync(f);
         } catch {}
       }
+      // Also clean up any lingering intermediate files with this uniqueId
+      try {
+        if (fs.existsSync(outputDir)) {
+          const leftovers = fs.readdirSync(outputDir).filter((f) => f.startsWith(uniqueId));
+          for (const l of leftovers) {
+            try { fs.unlinkSync(path.join(outputDir, l)); } catch {}
+          }
+        }
+      } catch {}
     };
+
+    onStageChange?.('preparing');
 
     return new Promise(async (resolve) => {
       const proc = spawn(binary, args);
+
+      proc.stdout?.on('data', (chunk) => {
+        const text = chunk.toString();
+        if (text.includes('[download]')) {
+          onStageChange?.('downloading');
+        } else if (text.includes('[Merger]') || text.includes('ffmpeg') || text.includes('Merging')) {
+          onStageChange?.('finalizing');
+        }
+      });
+
+      proc.stderr?.on('data', (chunk) => {
+        const text = chunk.toString();
+        if (text.includes('[download]')) {
+          onStageChange?.('downloading');
+        } else if (text.includes('[Merger]') || text.includes('ffmpeg') || text.includes('Merging')) {
+          onStageChange?.('finalizing');
+        }
+      });
+
       const timer = setTimeout(() => {
         try {
           proc.kill('SIGKILL');
@@ -417,19 +461,58 @@ export class YtDlpService {
         resolve(null);
       }, 75000);
 
-      proc.on('close', async (code) => {
+      proc.on('close', async (_code) => {
         clearTimeout(timer);
 
-        // Find created file
+        // Find created file, filtering out intermediate or unmerged artifacts (.part, .ytdl, etc.)
         let createdFile: string | null = null;
         const expectedMp4 = path.join(outputDir, `${uniqueId}.mp4`);
 
         if (fs.existsSync(expectedMp4)) {
           createdFile = expectedMp4;
         } else {
-          const matched = fs.readdirSync(outputDir).filter((f) => f.startsWith(uniqueId));
+          // Look for finished container files, excluding intermediate fragments (.f137, .part, etc.)
+          const matched = fs
+            .readdirSync(outputDir)
+            .filter(
+              (f) =>
+                f.startsWith(uniqueId) &&
+                !f.endsWith('.part') &&
+                !f.endsWith('.ytdl') &&
+                !f.includes('.temp.') &&
+                !/\.f\d+\./.test(f)
+            );
           if (matched.length > 0) {
             createdFile = path.join(outputDir, matched[0]);
+          }
+        }
+
+        // If no finished file found, check if separate video and audio fragments exist to merge manually
+        if (!createdFile || !fs.existsSync(createdFile)) {
+          const allMatches = fs.readdirSync(outputDir).filter((f) => f.startsWith(uniqueId));
+          const videoFrag = allMatches.find((f) => f.includes('.f') && (f.endsWith('.mp4') || f.endsWith('.webm')));
+          const audioFrag = allMatches.find((f) => f.includes('.f') && (f.endsWith('.m4a') || f.endsWith('.webm') || f.endsWith('.opus')));
+
+          if (videoFrag && audioFrag) {
+            const manualMerged = path.join(outputDir, `${uniqueId}_manual_merged.mp4`);
+            cleanupFiles.push(manualMerged);
+            try {
+              await execFileAsync(ffmpegBin, [
+                '-y',
+                '-i', path.join(outputDir, videoFrag),
+                '-i', path.join(outputDir, audioFrag),
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', '+faststart',
+                manualMerged,
+              ]);
+              if (fs.existsSync(manualMerged) && fs.statSync(manualMerged).size > 0) {
+                createdFile = manualMerged;
+              }
+            } catch {
+              // Manual merge failed
+            }
           }
         }
 
@@ -444,15 +527,16 @@ export class YtDlpService {
         // Probe media with ffprobe
         let probe = await probeMediaFile(createdFile);
 
-        // FIX 2: If the video has NO AUDIO (e.g. 1080p / 1440p video-only stream),
+        // If the video has NO AUDIO (e.g. video-only stream from DASH source),
         // fetch separate best audio stream and merge it using FFmpeg
-        if (probe.hasVideo && !probe.hasAudio) {
+        if (probe.hasVideo && !probe.hasAudio && requireAudio) {
+          console.log(`[Audio Merger] Video stream detected without audio (${createdFile}). Fetching separate audio to merge.`);
           const audioTempTemplate = path.join(outputDir, `${uniqueId}_audio.%(ext)s`);
           const audioArgs = [
             '-f',
             'bestaudio',
             '--ffmpeg-location',
-            '/usr/bin/ffmpeg',
+            ffmpegBin,
             '--no-playlist',
             '--no-warnings',
             '--no-check-certificates',
@@ -469,17 +553,20 @@ export class YtDlpService {
               audioProc.on('error', () => resAudio());
             });
 
-            // Locate audio file
-            const audioMatches = fs.readdirSync(outputDir).filter((f) => f.startsWith(`${uniqueId}_audio`));
+            // Locate downloaded audio file
+            const audioMatches = fs
+              .readdirSync(outputDir)
+              .filter((f) => f.startsWith(`${uniqueId}_audio`) && !f.endsWith('.part') && !f.endsWith('.ytdl'));
+
             if (audioMatches.length > 0) {
               const audioPath = path.join(outputDir, audioMatches[0]);
               cleanupFiles.push(audioPath);
 
-              // Merge video and audio with FFmpeg
+              // Merge video and audio with FFmpeg into playable MP4 with AAC
               const mergedMp4 = path.join(outputDir, `${uniqueId}_merged.mp4`);
               cleanupFiles.push(mergedMp4);
 
-              await execFileAsync('/usr/bin/ffmpeg', [
+              await execFileAsync(ffmpegBin, [
                 '-y',
                 '-i',
                 createdFile,
@@ -497,22 +584,66 @@ export class YtDlpService {
               ]);
 
               if (fs.existsSync(mergedMp4) && fs.statSync(mergedMp4).size > 0) {
-                createdFile = mergedMp4;
-                probe = await probeMediaFile(createdFile);
+                const mergedProbe = await probeMediaFile(mergedMp4);
+                if (mergedProbe.isValid && mergedProbe.hasVideo && mergedProbe.hasAudio) {
+                  createdFile = mergedMp4;
+                  probe = mergedProbe;
+                  console.log(`[Audio Merger] Successfully merged audio and video into ${mergedMp4}`);
+                }
               }
             }
-          } catch {
-            // Best effort merge
+          } catch (mergeErr) {
+            console.error('[Audio Merger] Failed to merge separate audio:', (mergeErr as Error)?.message);
           }
         }
 
-        // FIX 1: Ensure MOOV atom is placed at start with faststart for 480p and all MP4s
-        // so the file opens cleanly in all standard players and browsers
+        // If audio is required but still missing, do NOT treat download as successful!
+        // Attempt a fallback download with a single pre-muxed combined stream (best[ext=mp4]/best)
+        if (requireAudio && (!probe.hasAudio || !probe.hasVideo)) {
+          console.warn('[Audio Merger] Output lacks audio stream after merge attempt. Trying pre-muxed combined format fallback.');
+          const fallbackTemplate = path.join(outputDir, `${uniqueId}_fallback.%(ext)s`);
+          const fallbackArgs = [
+            '-f',
+            'best[height<=1080][ext=mp4]/best[height<=1080]/best[ext=mp4]/best',
+            '--no-playlist',
+            '--no-warnings',
+            '--no-check-certificates',
+            ...this.getCommonArgs(),
+            '-o',
+            fallbackTemplate,
+            url,
+          ];
+
+          try {
+            await new Promise<void>((resFallback) => {
+              const fbProc = spawn(binary, fallbackArgs);
+              fbProc.on('close', () => resFallback());
+              fbProc.on('error', () => resFallback());
+            });
+
+            const fallbackMatches = fs
+              .readdirSync(outputDir)
+              .filter((f) => f.startsWith(`${uniqueId}_fallback`) && !f.endsWith('.part') && !f.endsWith('.ytdl'));
+
+            if (fallbackMatches.length > 0) {
+              const fbFile = path.join(outputDir, fallbackMatches[0]);
+              cleanupFiles.push(fbFile);
+              const fbProbe = await probeMediaFile(fbFile);
+              if (fbProbe.isValid && fbProbe.hasVideo && fbProbe.hasAudio) {
+                createdFile = fbFile;
+                probe = fbProbe;
+                console.log('[Audio Merger] Pre-muxed format fallback succeeded with video and audio.');
+              }
+            }
+          } catch {}
+        }
+
+        // MOOV atom placement with faststart for standard playback in browsers and players
         const optimizedMp4 = path.join(outputDir, `${uniqueId}_opt.mp4`);
         cleanupFiles.push(optimizedMp4);
 
         try {
-          await execFileAsync('/usr/bin/ffmpeg', [
+          await execFileAsync(ffmpegBin, [
             '-y',
             '-i',
             createdFile,
@@ -524,15 +655,26 @@ export class YtDlpService {
           ]);
 
           if (fs.existsSync(optimizedMp4) && fs.statSync(optimizedMp4).size > 0) {
-            createdFile = optimizedMp4;
-            probe = await probeMediaFile(createdFile);
+            const optProbe = await probeMediaFile(optimizedMp4);
+            if (optProbe.isValid && optProbe.hasVideo && (!requireAudio || optProbe.hasAudio)) {
+              createdFile = optimizedMp4;
+              probe = optProbe;
+            }
           }
         } catch {
-          // If remux failed, stick with createdFile
+          // If faststart remux failed, stick with createdFile
         }
 
-        // Final verification check: file must be valid media with video
+        // Strict final verification check:
+        // Must be valid media with video stream, non-zero size, and audio if required
         if (!probe.isValid || !probe.hasVideo || (probe.size || 0) === 0) {
+          cleanup();
+          resolve(null);
+          return;
+        }
+
+        if (requireAudio && !probe.hasAudio) {
+          console.error('[Audio Merger] Download rejected: final output has no audio stream and audio was required.');
           cleanup();
           resolve(null);
           return;

@@ -236,7 +236,7 @@ export async function triggerDownload(options: {
   title?: string;
   mediaType?: 'video' | 'audio';
   audioBitrate?: number;
-}): Promise<{ downloadUrl: string; filename: string }> {
+}): Promise<{ downloadUrl: string; filename: string; download_id?: string }> {
   try {
     const safeTitle = options.title
       ? options.title.trim().length > 190
@@ -307,9 +307,12 @@ export async function triggerDownload(options: {
       downloadEndpoint = `/${downloadEndpoint}`;
     }
 
+    const resolvedDownloadId = json.download_id || json.data?.download_id;
+
     return {
       downloadUrl: downloadEndpoint,
       filename: resolvedFilename,
+      download_id: resolvedDownloadId,
     };
   } catch (err: unknown) {
     if ((err as Error).message?.includes('Failed to fetch')) {

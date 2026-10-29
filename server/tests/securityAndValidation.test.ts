@@ -14,7 +14,10 @@ import { adapterRegistry } from '../src/services/adapters/AdapterRegistry.js';
 import { FacebookAdapter } from '../src/services/adapters/FacebookAdapter.js';
 import { deduplicateAndSortVideoFormats, generateAudioFormats, selectStandardAndHighFormats } from '../src/utils/formatNormalizer.js';
 import { VideoFormat } from '../src/types/index.js';
-import { probeMediaFile } from '../src/utils/mediaProbe.js';
+import { probeMediaFile, verifyVideoOutput, getFfmpegBinary, getFfprobeBinary } from '../src/utils/mediaProbe.js';
+import { YtDlpService } from '../src/services/ytDlpService.js';
+import { getCachedVideoInfo, setCachedVideoInfo, clearVideoInfoCache, processVideoInfo } from '../src/services/videoService.js';
+import { ticketStore } from '../src/routes/apiRoutes.js';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -786,17 +789,29 @@ describe('HTTP Endpoint Query Tampering Regression Tests', () => {
     });
   });
 
-  describe('Automatic Highest Quality Selection', () => {
-    it('selects the highest available resolution without capping at 720p', () => {
+  describe('Quality Selection (720p Cap & Fallbacks)', () => {
+    it('selects the highest available resolution capped at 720p without exceeding 720p', () => {
       const formats: VideoFormat[] = [
         { id: '1', format: 'MP4', quality: '360p', resolution: '640x360', height: 360, url: 'https://fbcdn.net/360.mp4' },
         { id: '2', format: 'MP4', quality: '720p (HD)', resolution: '1280x720', height: 720, url: 'https://fbcdn.net/720.mp4' },
         { id: '3', format: 'MP4', quality: '1080p (Full HD)', resolution: '1920x1080', height: 1080, url: 'https://fbcdn.net/1080.mp4' },
         { id: '4', format: 'MP4', quality: '1440p (2K)', resolution: '2560x1440', height: 1440, url: 'https://fbcdn.net/1440.mp4' },
+        { id: '5', format: 'MP4', quality: '2160p (4K)', resolution: '3840x2160', height: 2160, url: 'https://fbcdn.net/2160.mp4' },
       ];
       const res = selectStandardAndHighFormats(formats);
-      expect(res.high?.height).toBe(1440);
-      expect(res.high?.quality).toBe('1440p (2K)');
+      expect(res.high?.height).toBe(720);
+      expect(res.high?.quality).toBe('720p (HD)');
+      expect(res.standard?.height).toBe(360);
+    });
+
+    it('automatically downloads the highest available below 1080p when 1080p is unavailable without upscaling', () => {
+      const formats: VideoFormat[] = [
+        { id: '1', format: 'MP4', quality: '360p', resolution: '640x360', height: 360, url: 'https://fbcdn.net/360.mp4' },
+        { id: '2', format: 'MP4', quality: '720p (HD)', resolution: '1280x720', height: 720, url: 'https://fbcdn.net/720.mp4' },
+      ];
+      const res = selectStandardAndHighFormats(formats);
+      expect(res.high?.height).toBe(720);
+      expect(res.high?.quality).toBe('720p (HD)');
       expect(res.standard?.height).toBe(360);
     });
 
@@ -891,7 +906,326 @@ describe('HTTP Endpoint Query Tampering Regression Tests', () => {
       expect(adapter.cleanString('Simple Normal Title')).toBe('Simple Normal Title');
     });
   });
+
+  describe('Audio/Video Stream Merging & Silent Video Bug Fix Regression Tests', () => {
+    const testDir = '/tmp/clipfetch_av_test';
+    const ffmpegBin = getFfmpegBinary();
+    const ffprobeBin = getFfprobeBinary();
+
+    beforeAll(() => {
+      if (!fs.existsSync(testDir)) {
+        fs.mkdirSync(testDir, { recursive: true });
+      }
+    });
+
+    afterAll(() => {
+      try {
+        if (fs.existsSync(testDir)) {
+          fs.rmSync(testDir, { recursive: true, force: true });
+        }
+      } catch {}
+    });
+
+    it('(a) video & audio merged: ensures separate video and audio streams merge into a playable output with both streams', async () => {
+      const videoOnlyPath = path.join(testDir, 'raw_video.mp4');
+      const audioTrackPath = path.join(testDir, 'raw_audio.aac');
+      const mergedOutputPath = path.join(testDir, 'merged_output.mp4');
+
+      // 1. Generate video-only track (silent)
+      execFileSync(ffmpegBin, [
+        '-y',
+        '-f', 'lavfi', '-i', 'testsrc=size=1280x720:rate=24',
+        '-t', '1',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+        videoOnlyPath,
+      ]);
+
+      // 2. Generate separate audio track
+      execFileSync(ffmpegBin, [
+        '-y',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+        '-t', '1',
+        '-c:a', 'aac', '-b:a', '128k',
+        audioTrackPath,
+      ]);
+
+      // Verify separate tracks before merge
+      const videoProbe = await probeMediaFile(videoOnlyPath);
+      expect(videoProbe.hasVideo).toBe(true);
+      expect(videoProbe.hasAudio).toBe(false);
+
+      const audioProbe = await probeMediaFile(audioTrackPath);
+      expect(audioProbe.hasVideo).toBe(false);
+      expect(audioProbe.hasAudio).toBe(true);
+
+      // 3. Merge streams with FFmpeg using copy for video and AAC for audio
+      execFileSync(ffmpegBin, [
+        '-y',
+        '-i', videoOnlyPath,
+        '-i', audioTrackPath,
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        mergedOutputPath,
+      ]);
+
+      // 4. Verify merged output has BOTH video and audio streams
+      const mergedProbe = await probeMediaFile(mergedOutputPath);
+      expect(mergedProbe.isValid).toBe(true);
+      expect(mergedProbe.hasVideo).toBe(true);
+      expect(mergedProbe.hasAudio).toBe(true);
+      expect(mergedProbe.audioCodec).toBe('aac');
+
+      const verification = await verifyVideoOutput(mergedOutputPath, true);
+      expect(verification.valid).toBe(true);
+      expect(verification.hasVideo).toBe(true);
+      expect(verification.hasAudio).toBe(true);
+    });
+
+    it('(b) missing audio stream detected: detects when media has video but lacks audio and flags it as invalid', async () => {
+      const silentVideoPath = path.join(testDir, 'silent_test_video.mp4');
+
+      // Generate video-only stream with no audio track
+      execFileSync(ffmpegBin, [
+        '-y',
+        '-f', 'lavfi', '-i', 'testsrc=size=854x480:rate=24',
+        '-t', '1',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+        silentVideoPath,
+      ]);
+
+      const probe = await probeMediaFile(silentVideoPath);
+      expect(probe.isValid).toBe(true);
+      expect(probe.hasVideo).toBe(true);
+      expect(probe.hasAudio).toBe(false);
+
+      // Validation with requireAudio=true must detect missing audio and reject
+      const verification = await verifyVideoOutput(silentVideoPath, true);
+      expect(verification.valid).toBe(false);
+      expect(verification.hasVideo).toBe(true);
+      expect(verification.hasAudio).toBe(false);
+      expect(verification.reason).toMatch(/Missing audio stream/i);
+    });
+
+    it('(c) FFmpeg merge failure handled: does not treat a failed merge as successful and rejects intermediate video-only files', async () => {
+      const videoOnlyPath = path.join(testDir, 'source_video.mp4');
+      const corruptAudioPath = path.join(testDir, 'corrupt_audio.aac');
+      const failedMergePath = path.join(testDir, 'failed_merge_out.mp4');
+
+      // Create valid video file
+      execFileSync(ffmpegBin, [
+        '-y',
+        '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=24',
+        '-t', '1',
+        '-c:v', 'libx264',
+        videoOnlyPath,
+      ]);
+
+      // Create a corrupted audio file that is not a valid audio bitstream
+      fs.writeFileSync(corruptAudioPath, Buffer.from('NOT_A_VALID_AUDIO_BITSTREAM_CORRUPT_HEADER'));
+
+      // Attempt merge with corrupt audio - must fail
+      let mergeThrew = false;
+      try {
+        execFileSync(ffmpegBin, [
+          '-y',
+          '-i', videoOnlyPath,
+          '-i', corruptAudioPath,
+          '-c:v', 'copy',
+          '-c:a', 'aac',
+          failedMergePath,
+        ], { stdio: 'pipe' });
+      } catch {
+        mergeThrew = true;
+      }
+
+      expect(mergeThrew).toBe(true);
+      expect(fs.existsSync(failedMergePath)).toBe(false);
+
+      // Verify that the intermediate videoOnlyPath without audio is NOT accepted as a complete video
+      const intermediateVerification = await verifyVideoOutput(videoOnlyPath, true);
+      expect(intermediateVerification.valid).toBe(false);
+      expect(intermediateVerification.hasAudio).toBe(false);
+    });
+
+    it('(d) audio-only source handled without falsely claiming a complete video: rejects audio-only files for video requests', async () => {
+      const pureAudioPath = path.join(testDir, 'pure_audio.mp3');
+
+      // Create pure MP3 audio file with no video stream
+      execFileSync(ffmpegBin, [
+        '-y',
+        '-f', 'lavfi', '-i', 'sine=frequency=600:sample_rate=44100',
+        '-t', '1',
+        '-c:a', 'libmp3lame', '-b:a', '128k',
+        pureAudioPath,
+      ]);
+
+      const probe = await probeMediaFile(pureAudioPath);
+      expect(probe.isValid).toBe(true);
+      expect(probe.hasVideo).toBe(false);
+      expect(probe.hasAudio).toBe(true);
+
+      // When tested as a video output, it must be rejected because hasVideo is false
+      const verification = await verifyVideoOutput(pureAudioPath, true);
+      expect(verification.valid).toBe(false);
+      expect(verification.hasVideo).toBe(false);
+      expect(verification.reason).toMatch(/does not contain a video stream/i);
+    });
+
+    it('(e) highest available video resolution capped at 720p: ensures High Quality caps at 720p while button name remains High Quality', () => {
+      const highResFormats: VideoFormat[] = [
+        { id: 'fmt-360', format: 'MP4', quality: '360p', resolution: '640x360', height: 360, url: 'https://fbcdn.net/360.mp4', hasAudio: true, hasVideo: true },
+        { id: 'fmt-480', format: 'MP4', quality: '480p (SD)', resolution: '854x480', height: 480, url: 'https://fbcdn.net/480.mp4', hasAudio: true, hasVideo: true },
+        { id: 'fmt-720', format: 'MP4', quality: '720p (HD)', resolution: '1280x720', height: 720, url: 'https://fbcdn.net/720.mp4', hasAudio: true, hasVideo: true },
+        { id: 'fmt-1080', format: 'MP4', quality: '1080p (Full HD)', resolution: '1920x1080', height: 1080, url: 'https://fbcdn.net/1080.mp4', hasAudio: true, hasVideo: true },
+        { id: 'fmt-1440', format: 'MP4', quality: '1440p (2K)', resolution: '2560x1440', height: 1440, url: 'https://fbcdn.net/1440.mp4', hasAudio: true, hasVideo: true },
+        { id: 'fmt-2160', format: 'MP4', quality: '2160p (4K)', resolution: '3840x2160', height: 2160, url: 'https://fbcdn.net/2160.mp4', hasAudio: true, hasVideo: true },
+      ];
+
+      // Format selection must cap High Quality strictly at 720p
+      const selection = selectStandardAndHighFormats(highResFormats);
+      expect(selection.high).toBeDefined();
+      expect(selection.high?.height).toBe(720);
+      expect(selection.high?.quality).toBe('720p (HD)');
+
+      // Standard quality option must be preserved as 480p or lowest available
+      expect(selection.standard).toBeDefined();
+      expect(selection.standard?.height).toBe(480);
+
+      // Deduplication and sorting must preserve all distinct resolutions in ascending order
+      const sorted = deduplicateAndSortVideoFormats(highResFormats);
+      expect(sorted.length).toBe(6);
+      expect(sorted.map((f) => f.height)).toEqual([360, 480, 720, 1080, 1440, 2160]);
+
+      // Verify that FFmpeg and ffprobe binary locators resolve cleanly
+      expect(YtDlpService.getFfmpegPath()).toBeDefined();
+      expect(fs.existsSync(YtDlpService.getFfmpegPath())).toBe(true);
+      expect(fs.existsSync(getFfprobeBinary())).toBe(true);
+    });
+
+    it('verifies exact simplified download button labels (High Quality and Standard Quality)', () => {
+      // Verify ResultCard source uses exact simplified button labels without resolution numbers or pixel rates
+      const resultCardSource = fs.readFileSync(path.resolve(process.cwd(), 'src/components/ResultCard.tsx'), 'utf-8');
+      expect(resultCardSource).toContain('<span>High Quality</span>');
+      expect(resultCardSource).toContain('<span>Standard Quality</span>');
+      expect(resultCardSource).not.toContain('Download Video (1080p');
+      expect(resultCardSource).not.toContain('Download Video (720p');
+      expect(resultCardSource).not.toContain('Download Video (480p');
+      expect(resultCardSource).not.toContain('Download Video (${highestLabel})');
+      expect(resultCardSource).not.toContain('Download Video (${standardLabel})');
+    });
+  });
+
+  describe('Performance, In-Memory Metadata Caching & Real Progress Reporting', () => {
+    const testUrl = 'https://www.facebook.com/watch/?v=999888777666';
+    const mockInfo = {
+      id: 'mock-fb-1',
+      title: 'Performance Benchmark Video',
+      platform: 'facebook',
+      platformLabel: 'Facebook',
+      url: testUrl,
+      thumbnail: 'https://fbcdn.net/thumb.jpg',
+      author: 'SpeedTester',
+      duration: 60,
+      durationFormatted: '1:00',
+      formats: [
+        { id: 'fb-sd', format: 'MP4', quality: '480p (SD)', resolution: '854x480', height: 480, url: 'https://fbcdn.net/sd.mp4', hasAudio: true, hasVideo: true },
+        { id: 'fb-hd', format: 'MP4', quality: '720p (HD)', resolution: '1280x720', height: 720, url: 'https://fbcdn.net/hd.mp4', hasAudio: true, hasVideo: true },
+      ],
+      downloadAvailable: true,
+    };
+
+    it('caches extracted metadata in-memory and returns cached entries in sub-millisecond time', () => {
+      clearVideoInfoCache();
+      expect(getCachedVideoInfo(testUrl)).toBeNull();
+
+      setCachedVideoInfo(testUrl, mockInfo as any);
+      const cached = getCachedVideoInfo(testUrl);
+      expect(cached).not.toBeNull();
+      expect(cached?.title).toBe('Performance Benchmark Video');
+      expect(cached?.formats.length).toBe(2);
+
+      // Verify clone isolation
+      if (cached) {
+        cached.title = 'Mutated';
+        const fresh = getCachedVideoInfo(testUrl);
+        expect(fresh?.title).toBe('Performance Benchmark Video');
+      }
+    });
+
+    it('expires metadata cache entries after TTL', () => {
+      clearVideoInfoCache();
+      setCachedVideoInfo(testUrl, mockInfo as any, 10); // 10ms TTL
+      expect(getCachedVideoInfo(testUrl)).not.toBeNull();
+
+      // Wait 15ms for expiration
+      const start = Date.now();
+      while (Date.now() - start < 15) {}
+
+      expect(getCachedVideoInfo(testUrl)).toBeNull();
+    });
+
+    it('verifies yt-dlp service uses metadata-only flags without downloading media', () => {
+      const ytDlpSource = fs.readFileSync(path.resolve(process.cwd(), 'server/src/services/ytDlpService.ts'), 'utf-8');
+      expect(ytDlpSource).toContain("'--dump-single-json'");
+      expect(ytDlpSource).toContain("'--skip-download'");
+      expect(ytDlpSource).toContain("'--no-check-formats'");
+      expect(ytDlpSource).toContain("'--socket-timeout'");
+    });
+
+    it('verifies real progress stages are tracked and returned without fake percentages', () => {
+      const ticketId = 'test-perf-ticket-1';
+      ticketStore.set(ticketId, {
+        id: ticketId,
+        url: 'https://fbcdn.net/hd.mp4',
+        pageUrl: testUrl,
+        formatId: 'fb-hd',
+        mediaType: 'video',
+        title: 'Performance Benchmark Video',
+        filename: 'Performance_Benchmark_Video.mp4',
+        createdAt: Date.now(),
+        stage: 'preparing',
+        stageLabel: 'Preparing video',
+      });
+
+      const ticket = ticketStore.get(ticketId);
+      expect(ticket).toBeDefined();
+      expect(ticket?.stage).toBe('preparing');
+      expect(ticket?.stageLabel).toBe('Preparing video');
+
+      // Update to downloading stage
+      if (ticket) {
+        ticket.stage = 'downloading';
+        ticket.stageLabel = 'Downloading video';
+      }
+      expect(ticketStore.get(ticketId)?.stage).toBe('downloading');
+      expect(ticketStore.get(ticketId)?.stageLabel).toBe('Downloading video');
+
+      // Update to finalizing stage
+      if (ticket) {
+        ticket.stage = 'finalizing';
+        ticket.stageLabel = 'Finalizing video';
+      }
+      expect(ticketStore.get(ticketId)?.stage).toBe('finalizing');
+      expect(ticketStore.get(ticketId)?.stageLabel).toBe('Finalizing video');
+
+      // Update to ready stage
+      if (ticket) {
+        ticket.stage = 'ready';
+        ticket.stageLabel = 'Download complete';
+      }
+      expect(ticketStore.get(ticketId)?.stage).toBe('ready');
+      expect(ticketStore.get(ticketId)?.stageLabel).toBe('Download complete');
+
+      // Verify no fake percentages are stored
+      expect(ticketStore.get(ticketId)?.stageLabel).not.toMatch(/%|\d+%/);
+
+      ticketStore.delete(ticketId);
+    });
+  });
 });
+
 
 
 

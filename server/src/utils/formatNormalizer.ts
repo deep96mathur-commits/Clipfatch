@@ -181,9 +181,11 @@ export interface QualitySelectionResult {
 }
 
 /**
- * Selects standard quality and highest available quality:
- * - High Quality: The highest resolution available from the source (no artificial 720p cap)
- * - Standard Quality: 480p (or lowest available resolution as fallback)
+ * Selects standard quality and high quality capped strictly at 720p:
+ * - High Quality: Highest compatible resolution available up to 720p (do not upscale).
+ *   If video has 720p or higher, High Quality returns 720p only.
+ *   If 720p is unavailable, automatically picks the highest available quality below 720p.
+ * - Standard Quality: Lower-resolution, bandwidth-friendly video with audio, preferably around 480p.
  */
 export function selectStandardAndHighFormats(formats: VideoFormat[]): QualitySelectionResult {
   const videoFormats = formats.filter((f) => !f.isAudio && f.mediaType !== 'audio');
@@ -191,13 +193,20 @@ export function selectStandardAndHighFormats(formats: VideoFormat[]): QualitySel
     return { standard: null, high: null };
   }
 
-  // Sorted ascending: last element is the highest available quality
+  // Sorted ascending: lowest to highest height
   const sortedByHeight = [...videoFormats].sort((a, b) => (a.height || 0) - (b.height || 0));
-  const high = sortedByHeight[sortedByHeight.length - 1];
 
-  // Standard Quality: 480p, or the closest format <= 480p, or lowest available
+  // High Quality: Highest available stream at up to 720p (capped at 720p, no upscaling)
+  // If 720p is unavailable, automatically select the highest available below 720p.
+  const capped720 = sortedByHeight.filter((f) => (f.height || 0) <= 720);
+  const high = capped720.length > 0 ? capped720[capped720.length - 1] : sortedByHeight[0];
+
+  // Standard Quality: lower-resolution, bandwidth-friendly video with audio, preferably around 480p
   const standard480 = sortedByHeight.find((f) => f.height === 480);
-  const standard = standard480 || (sortedByHeight.length > 1 ? sortedByHeight[0] : high);
+  const below480 = sortedByHeight.filter((f) => (f.height || 0) <= 480);
+  const standard =
+    standard480 ||
+    (below480.length > 0 ? below480[below480.length - 1] : (sortedByHeight.length > 1 ? sortedByHeight[0] : high));
 
   return { standard, high };
 }

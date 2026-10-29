@@ -240,8 +240,8 @@ export async function streamMediaToClient(
   // If sourcePageUrl is provided and format needs merging/remuxing, use the verified FFmpeg pipeline
   if (!isDemoOrSample && (sourcePageUrl || ((isYouTube || isInstagram) && mediaUrl)) && isHighResOrSdRemuxNeeded) {
     const targetUrl = sourcePageUrl || mediaUrl;
-    const downloaded = await YtDlpService.downloadToLocalFile(targetUrl, formatId || 'best');
-    if (downloaded && downloaded.probe.isValid && downloaded.probe.hasVideo) {
+    const downloaded = await YtDlpService.downloadToLocalFile(targetUrl, formatId || 'best', '/tmp/clipfetch', true);
+    if (downloaded && downloaded.probe.isValid && downloaded.probe.hasVideo && downloaded.probe.hasAudio) {
       const verification = verifyMediaFile(downloaded.filePath, 'video');
       if (verification.valid) {
         try {
@@ -270,7 +270,7 @@ export async function streamMediaToClient(
     }
   }
 
-  // FIX 4: For verified progressive direct stream, buffer to temp file and verify MP4 signature before sending
+  // FIX 4: For progressive direct stream, buffer to temp file and verify MP4 signature AND audio stream before sending
   if (mediaUrl && (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://'))) {
     const mediaValidation = await validateMediaDownloadUrl(mediaUrl);
 
@@ -323,27 +323,33 @@ export async function streamMediaToClient(
 
             await new Promise<void>((resolveClose) => fileStream.end(() => resolveClose()));
 
-            // Backend safety check: verify output starts with 'ftyp' and is > 100 KB
+            // Backend safety check: verify output starts with 'ftyp' and has both video and audio streams
             const verification = verifyMediaFile(directTmp, 'video');
             if (verification.valid) {
-              const stat = fs.statSync(directTmp);
-              res.setHeader('Content-Type', 'video/mp4');
-              res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-              res.setHeader('Content-Length', stat.size);
-              res.setHeader('X-Content-Type-Options', 'nosniff');
-              res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+              const directProbe = await probeMediaFile(directTmp);
+              if (directProbe.isValid && directProbe.hasVideo && directProbe.hasAudio) {
+                const stat = fs.statSync(directTmp);
+                res.setHeader('Content-Type', 'video/mp4');
+                res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+                res.setHeader('Content-Length', stat.size);
+                res.setHeader('X-Content-Type-Options', 'nosniff');
+                res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
 
-              await new Promise<void>((resolvePipe, rejectPipe) => {
-                const readStream = fs.createReadStream(directTmp);
-                readStream.on('end', () => resolvePipe());
-                readStream.on('error', (err) => rejectPipe(err));
-                readStream.on('close', () => {
-                  try { fs.unlinkSync(directTmp); } catch {}
-                  resolvePipe();
+                await new Promise<void>((resolvePipe, rejectPipe) => {
+                  const readStream = fs.createReadStream(directTmp);
+                  readStream.on('end', () => resolvePipe());
+                  readStream.on('error', (err) => rejectPipe(err));
+                  readStream.on('close', () => {
+                    try { fs.unlinkSync(directTmp); } catch {}
+                    resolvePipe();
+                  });
+                  readStream.pipe(res);
                 });
-                readStream.pipe(res);
-              });
-              return;
+                return;
+              } else {
+                // Direct stream is missing audio or video; do not send silent video
+                try { fs.unlinkSync(directTmp); } catch {}
+              }
             } else {
               try { fs.unlinkSync(directTmp); } catch {}
             }
@@ -356,10 +362,10 @@ export async function streamMediaToClient(
     }
   }
 
-  // Fallback: If direct streaming failed or wasn't suitable, run through yt-dlp + FFmpeg
+  // Fallback: If direct streaming failed or lacked audio, run through yt-dlp + FFmpeg to merge streams
   if (sourcePageUrl) {
-    const downloaded = await YtDlpService.downloadToLocalFile(sourcePageUrl, formatId || 'best');
-    if (downloaded && downloaded.probe.isValid && downloaded.probe.hasVideo) {
+    const downloaded = await YtDlpService.downloadToLocalFile(sourcePageUrl, formatId || 'best', '/tmp/clipfetch', true);
+    if (downloaded && downloaded.probe.isValid && downloaded.probe.hasVideo && downloaded.probe.hasAudio) {
       const verification = verifyMediaFile(downloaded.filePath, 'video');
       if (verification.valid) {
         try {

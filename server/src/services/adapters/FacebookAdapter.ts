@@ -47,11 +47,13 @@ export class FacebookAdapter implements PlatformAdapter {
     }
 
     // 2. Secondary Strategy: Direct Facebook JSON Graph & HTML Scraper
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
+    // Only invoke HTML scraper if yt-dlp did not retrieve valid video candidates
+    if (rawVideoCandidates.length === 0) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 6000);
 
-      const htmlRes = await fetch(rawUrl, {
+        const htmlRes = await fetch(rawUrl, {
         signal: controller.signal,
         headers: {
           'User-Agent':
@@ -178,6 +180,7 @@ export class FacebookAdapter implements PlatformAdapter {
     } catch (e) {
       console.error('[FacebookAdapter] page scrape failed:', (e as Error).message);
     }
+  }
 
     // 3. Fallback: Facebook Official Video oEmbed API for Title & Thumbnail
     if (!title || !thumbnail) {
